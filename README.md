@@ -95,7 +95,7 @@ zapshare/
 
 ```
 Python 3.10+
-pip
+uv package manager
 Git
 ```
 
@@ -111,19 +111,19 @@ cd zapshare
 ### Create Virtual Environment
 
 ```
-python -m venv venv
+uv venv
 ```
 
 ### Activate Virtual Environment (Windows)
 
 ```
-venv\Scripts\activate
+.venv\Scripts\activate
 ```
 
 ### Install Dependencies
 
 ```
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 ### Run Server
@@ -152,10 +152,10 @@ http://127.0.0.1:8000/docs
 
 ## 🛣 Roadmap
 
-### Phase 1 — Cloud Chat Platform
-- [x] User authentication
-- [x] Chat system
-- [x] File sharing
+### Phase 1 — Cloud Chat Platform (In Progress)
+- [ ] User authentication
+- [ ] Chat system
+- [ ] File sharing
 
 ### Phase 2 — Performance & Scaling
 - [ ] Go-based microservices
