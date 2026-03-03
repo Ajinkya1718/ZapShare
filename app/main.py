@@ -14,7 +14,7 @@ Run with:  uvicorn main:app --reload
 
 # ---- Imports ----
 from fastapi import FastAPI, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -226,6 +226,11 @@ def chat_page(request: Request, receiver_id: int):
         db.close()
         return RedirectResponse(url="/dashboard", status_code=302)
 
+    # Get all users for the sidebar (excluding self)
+    users = db.execute(
+        "SELECT id, username FROM users WHERE id != ?", (user_id,)
+    ).fetchall()
+
     # Get all messages between these two users (in both directions)
     messages = db.execute("""
         SELECT m.*, u.username as sender_name
@@ -253,12 +258,13 @@ def chat_page(request: Request, receiver_id: int):
         "username": request.session.get("username"),
         "user_id": user_id,
         "receiver": receiver,
+        "users": users,
         "messages": messages,
         "files": files
     })
 
 
-# ---- 7. SEND MESSAGE ----
+# ---- 7. SEND MESSAGE (form-based, redirects back) ----
 @app.post("/send_message")
 def send_message(
     request: Request,
@@ -280,6 +286,95 @@ def send_message(
 
     # Redirect back to the chat page
     return RedirectResponse(url=f"/chat/{receiver_id}", status_code=302)
+
+
+# ---- 7b. SEND MESSAGE (JSON API — used by auto-refresh JS) ----
+@app.post("/api/send")
+async def api_send_message(request: Request):
+    """
+    Accepts a JSON POST with {receiver_id, content}.
+    Saves the message and returns it as JSON.
+    Used by the frontend fetch() call so page doesn't reload on send.
+    """
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    data = await request.json()
+    receiver_id = data.get("receiver_id")
+    content = data.get("content", "").strip()
+
+    if not content or not receiver_id:
+        return JSONResponse({"error": "missing fields"}, status_code=400)
+
+    db = get_db()
+    cursor = db.execute(
+        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
+        (user_id, receiver_id, content)
+    )
+    msg_id = cursor.lastrowid
+    db.commit()
+
+    # Fetch back the saved message with timestamp and sender name
+    msg = db.execute("""
+        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
+        FROM messages m
+        JOIN users u ON m.sender_id = u.id
+        WHERE m.id = ?
+    """, (msg_id,)).fetchone()
+    db.close()
+
+    return dict(msg)
+
+
+# ---- 7c. POLL MESSAGES (JSON API — used for auto-refresh) ----
+@app.get("/api/messages/{receiver_id}")
+def api_get_messages(
+    request: Request,
+    receiver_id: int,
+    after_msg: int = 0,
+    after_file: int = 0
+):
+    """
+    Returns new messages and files as JSON.
+    'after_msg' and 'after_file' are the last IDs the client already has.
+    The client calls this every 2 seconds to get new content.
+    """
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    db = get_db()
+
+    # Get new messages with ID greater than what the client already has
+    messages = db.execute("""
+        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
+        FROM messages m
+        JOIN users u ON m.sender_id = u.id
+        WHERE ((m.sender_id = ? AND m.receiver_id = ?)
+           OR  (m.sender_id = ? AND m.receiver_id = ?))
+          AND m.id > ?
+        ORDER BY m.timestamp ASC
+    """, (user_id, receiver_id, receiver_id, user_id, after_msg)).fetchall()
+
+    # Get new files with ID greater than what the client already has
+    files = db.execute("""
+        SELECT f.id, f.filename, f.timestamp, f.sender_id, u.username as sender_name
+        FROM files f
+        JOIN users u ON f.sender_id = u.id
+        WHERE ((f.sender_id = ? AND f.receiver_id = ?)
+           OR  (f.sender_id = ? AND f.receiver_id = ?))
+          AND f.id > ?
+        ORDER BY f.timestamp ASC
+    """, (user_id, receiver_id, receiver_id, user_id, after_file)).fetchall()
+
+    db.close()
+
+    return {
+        "messages": [dict(m) for m in messages],
+        "files": [dict(f) for f in files],
+        "user_id": user_id
+    }
 
 
 # ---- 8. UPLOAD FILE ----

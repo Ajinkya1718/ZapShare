@@ -1,106 +1,133 @@
-<!-- chat.html — Chat Page for ZapShare -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZapShare — Chat with {{ receiver['username'] }}</title>
+    <title>ZapShare — {{ receiver['username'] }}</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <!-- Dark Mode Toggle -->
     <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">🌙</button>
 
-    <!-- Top Navigation Bar -->
-    <nav class="navbar">
-        <div class="nav-left">
-            <a href="/dashboard" class="btn btn-outline btn-sm">← Back</a>
-            <span class="nav-logo">⚡ ZapShare</span>
-        </div>
-        <div class="nav-right">
-            <span class="nav-user">Chatting with <strong>{{ receiver['username'] }}</strong></span>
-            <a href="/logout" class="btn btn-outline btn-sm">Logout</a>
-        </div>
-    </nav>
+    <div class="app-layout chat-open">
 
-    <!-- Chat Container -->
-    <div class="chat-container">
+        <!-- ═══ LEFT SIDEBAR ═══ -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-logo">⚡ ZapShare</span>
+                <div class="sidebar-actions">
+                    <span style="font-size:13px;color:var(--text-sub)">{{ username }}</span>
+                    <a href="/logout" class="btn-outline">Logout</a>
+                </div>
+            </div>
 
-        <!-- Messages Section -->
-        <div class="chat-card">
-            <h3 class="section-title">💬 Messages</h3>
+            <div class="sidebar-users">
+                {% if users|length == 0 %}
+                <div class="sidebar-empty">No other users yet.</div>
+                {% else %}
+                {% for user in users %}
+                <a href="/chat/{{ user['id'] }}"
+                   class="user-row {% if user['id'] == receiver['id'] %}active{% endif %}">
+                    <div class="user-avatar">{{ user['username'][0]|upper }}</div>
+                    <div class="user-row-info">
+                        <div class="user-row-name">{{ user['username'] }}</div>
+                        <div class="user-row-sub">
+                            {% if user['id'] == receiver['id'] %}Chatting now{% else %}Click to chat{% endif %}
+                        </div>
+                    </div>
+                </a>
+                {% endfor %}
+                {% endif %}
+            </div>
+        </aside>
 
-            <div class="messages-box" id="messagesBox">
+        <!-- ═══ RIGHT CHAT PANEL ═══ -->
+        <main class="chat-panel">
+
+            <!-- Chat header -->
+            <div class="chat-header">
+                <a href="/dashboard" class="btn-outline" style="margin-right:4px;">←</a>
+                <div class="user-avatar" style="width:40px;height:40px;font-size:15px;">
+                    {{ receiver['username'][0]|upper }}
+                </div>
+                <div class="chat-header-info">
+                    <div class="chat-header-name">{{ receiver['username'] }}</div>
+                    <div class="chat-header-sub" id="pollStatus">Live • updates every 2s</div>
+                </div>
+            </div>
+
+            <!-- Messages area -->
+            <div class="messages-area" id="messagesArea">
                 {% if messages|length == 0 and files|length == 0 %}
-                <div class="empty-state">
-                    <p>No messages yet. Say hello! 👋</p>
+                <div style="text-align:center;color:var(--text-sub);font-size:13px;margin-top:32px;">
+                    No messages yet — say hello! 👋
                 </div>
                 {% endif %}
 
-                <!-- Display all text messages -->
+                <!-- Render server-side messages -->
                 {% for msg in messages %}
-                <div class="message {% if msg['sender_id'] == user_id %}sent{% else %}received{% endif %}">
-                    <div class="message-header">
-                        <strong>{{ msg['sender_name'] }}</strong>
-                        <span class="message-time">{{ msg['timestamp'] }}</span>
-                    </div>
-                    <div class="message-body">{{ msg['content'] }}</div>
+                <div class="bubble {% if msg['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
+                     data-id="{{ msg['id'] }}" data-type="msg">
+                    {% if msg['sender_id'] != user_id %}
+                    <div class="bubble-sender">{{ msg['sender_name'] }}</div>
+                    {% endif %}
+                    <span class="bubble-text">{{ msg['content'] }}</span>
+                    <span class="bubble-time">{{ msg['timestamp'][11:16] }}</span>
                 </div>
                 {% endfor %}
 
-                <!-- Display all shared files -->
+                <!-- Render server-side files -->
                 {% for f in files %}
-                <div class="message file-message {% if f['sender_id'] == user_id %}sent{% else %}received{% endif %}">
-                    <div class="message-header">
-                        <strong>{{ f['sender_name'] }}</strong>
-                        <span class="message-time">{{ f['timestamp'] }}</span>
-                    </div>
-                    <div class="message-body file-body">
-                        📎 <a href="/download/{{ f['id'] }}" class="file-link">{{ f['filename'] }}</a>
+                <div class="bubble file-bubble {% if f['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
+                     data-id="{{ f['id'] }}" data-type="file">
+                    <span class="file-icon">📎</span>
+                    <div class="file-info">
+                        {% if f['sender_id'] != user_id %}
+                        <div class="bubble-sender">{{ f['sender_name'] }}</div>
+                        {% endif %}
+                        <div class="file-name">
+                            <a href="/download/{{ f['id'] }}" class="file-link">{{ f['filename'] }}</a>
+                        </div>
+                        <div class="file-size">{{ f['timestamp'][11:16] }}</div>
                     </div>
                 </div>
                 {% endfor %}
             </div>
-        </div>
 
-        <!-- Send Message Form -->
-        <div class="chat-card send-card">
-            <h3 class="section-title">✉️ Send a Message</h3>
-            <form method="POST" action="/send_message" class="send-form">
-                <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
+            <!-- Input area -->
+            <div class="input-area">
+
+                <!-- Text message row -->
                 <div class="input-row">
-                    <input type="text" name="content" placeholder="Type your message..." 
-                           required class="message-input">
-                    <button type="submit" class="btn btn-primary btn-send">Send</button>
+                    <input type="text" class="msg-input" id="msgInput"
+                           placeholder="Type a message…" autocomplete="off">
+                    <span id="sendingIndicator">sending…</span>
+                    <button class="send-btn" id="sendBtn" title="Send">➤</button>
                 </div>
-            </form>
-        </div>
 
-        <!-- Upload File Form -->
-        <div class="chat-card send-card">
-            <h3 class="section-title">📁 Share a File</h3>
-            <form method="POST" action="/upload" enctype="multipart/form-data" class="send-form">
-                <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
-                <div class="input-row">
-                    <input type="file" name="file" required class="file-input">
-                    <button type="submit" class="btn btn-primary btn-send">Upload</button>
-                </div>
-            </form>
-        </div>
+                <!-- File upload row -->
+                <form method="POST" action="/upload" enctype="multipart/form-data" class="file-row" id="fileForm">
+                    <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
+                    <input type="file" name="file" id="fileUploadInput"
+                           onchange="updateFileLabel(this)">
+                    <label for="fileUploadInput" class="file-input-label" id="fileLabel">
+                        📎 Choose file to share…
+                    </label>
+                    <button type="submit" class="upload-btn">Send File</button>
+                </form>
 
-        <!-- Refresh Button -->
-        <div class="refresh-section">
-            <button onclick="location.reload()" class="btn btn-outline">
-                🔄 Refresh Chat
-            </button>
-        </div>
+            </div>
+        </main>
     </div>
 
-    <script src="/static/script.js"></script>
+    <!-- Pass template data to JS -->
     <script>
-        // Auto-scroll to the bottom of the messages box
-        const box = document.getElementById('messagesBox');
-        if (box) box.scrollTop = box.scrollHeight;
+        const RECEIVER_ID    = {{ receiver['id'] }};
+        const CURRENT_UID    = {{ user_id }};
+        // Start polling from last rendered IDs so we don't re-fetch existing messages
+        let lastMsgId  = {{ messages[-1]['id']  if messages  else 0 }};
+        let lastFileId = {{ files[-1]['id']      if files     else 0 }};
     </script>
+    <script src="/static/script.js"></script>
 </body>
 </html>
