@@ -5,7 +5,7 @@
 ![Supabase](https://img.shields.io/badge/Supabase-Database-3ECF8E?logo=supabase)
 ![Status](https://img.shields.io/badge/Project-Active-success)
 
-> 🚀 A modern cloud-based real-time chat & file sharing platform designed for scalability and future offline capabilities.
+> 🚀 A modern cloud-based real-time chat & file sharing platform designed for scalability and future offline capabilities
 
 ---
 
