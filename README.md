@@ -1,194 +1,71 @@
-# 💬📁 ZapShare — Chat & Sharing Platform
+# ZapShare -- Simple Chat and File Sharing Web App
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)
-![Supabase](https://img.shields.io/badge/Supabase-Database-3ECF8E?logo=supabase)
-![Status](https://img.shields.io/badge/Project-Active-success)
+A beginner-friendly web-based chat application built with Python, FastAPI, and SQLite.
 
-> 🚀 A modern cloud-based real-time chat & file sharing platform designed for scalability and future offline capabilities
+## Features
 
----
+- User Registration and Login
+- Dashboard to see all registered users
+- Chat with text messages
+- File sharing (upload and download)
+- Dark / Light mode toggle
 
-## ✨ Overview
+## Tech Stack
 
-**ZapShare** is a full-stack communication platform that combines:
+- Backend: Python 3.10+, FastAPI, Uvicorn
+- Database: SQLite (via sqlite3 module)
+- Frontend: HTML, CSS, JavaScript (Jinja2 templates)
+- Auth: Session-based login with SHA-256 password hashing
 
-- 💬 Real-time messaging  
-- 📁 Secure file sharing  
-- 👤 User authentication  
-- ☁️ Cloud deployment  
+## Project Structure
 
-The system is designed with a modular architecture to support future enhancements such as LAN/offline communication and high-performance modules.
+    ZapShare/
+     app/
+        main.py           # All routes and app logic
+        database.py       # SQLite database setup
+        requirements.txt  # Python dependencies
+        templates/        # HTML pages
+           login.html
+           register.html
+           dashboard.html
+           chat.html
+        static/           # CSS and JS
+           style.css
+           script.js
+        uploads/          # Uploaded files
+     render.yaml           # Render deployment config
+     README.md
 
----
+## How to Run Locally
 
-## 🎯 Key Features
+1. Install dependencies:
+       pip install -r app/requirements.txt
 
-### 👤 User System
-- Secure registration & login
-- Profile management
-- Online/offline status
+2. Start the server:
+       cd app
+       uvicorn main:app --reload
 
-### 💬 Chat
-- Real-time one-to-one messaging
-- Message history
-- Text & file messages
+3. Open browser: http://127.0.0.1:8000
 
-### 📁 File Sharing
-- Upload & download files
-- Share files directly in chat
-- File metadata storage
+## Deploy on Render
 
----
+1. Push this repo to GitHub
+2. Go to https://render.com and connect your repo
+3. Use these settings:
+       Build Command:  pip install -r app/requirements.txt
+       Start Command:  cd app && uvicorn main:app --host 0.0.0.0 --port $PORT
 
-## 🏗 System Architecture
+Or simply click New > Blueprint and Render will auto-detect render.yaml.
 
-Frontend (Web UI)  
-⬇  
-FastAPI Backend  
-⬇  
-Supabase (PostgreSQL + Storage)
+## Routes
 
----
-
-## 🛠 Tech Stack
-
-**Backend**
-- FastAPI (Python)
-- WebSockets for real-time communication
-
-**Database & Storage**
-- Supabase (PostgreSQL)
-- Supabase Storage
-
-**Frontend**
-- HTML, CSS, JavaScript  
-- React (planned)
-
-**Deployment**
-- Free-tier cloud platform
-
----
-
-## 📂 Project Structure
-
-```
-zapshare/
-│
-├── backend/
-│   ├── app/
-│   │   ├── main.py
-│   │   ├── routes/
-│   │   ├── models/
-│   │   └── websocket/
-│
-├── frontend/
-├── uploads/
-└── README.md
-```
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-```
-Python 3.10+
-uv package manager
-Git
-```
-
----
-
-### Installation
-
-```
-git clone https://github.com/your-username/zapshare.git
-cd zapshare
-```
-
-### Create Virtual Environment
-
-```
-uv venv
-```
-
-### Activate Virtual Environment (Windows)
-
-```
-.venv\Scripts\activate
-```
-
-### Install Dependencies
-
-```
-uv pip install -r requirements.txt
-```
-
-### Run Server
-
-```
-uvicorn app.main:app --reload
-```
-
-### Open in Browser
-
-```
-http://127.0.0.1:8000/docs
-```
-
----
-
-## 🗄 Database Setup
-
-```
-1. Create a Supabase project
-2. Configure database tables
-3. Add API keys as environment variables
-```
-
----
-
-## 🛣 Roadmap
-
-### Phase 1 — Cloud Chat Platform (In Progress)
-- [ ] User authentication
-- [ ] Chat system
-- [ ] File sharing
-
-### Phase 2 — Performance & Scaling
-- [ ] Go-based microservices
-- [ ] Optimized file transfer
-
-### Phase 3 — Offline & LAN Mode
-- [ ] Peer-to-peer communication
-- [ ] Local network discovery
-
-### Phase 4 — Desktop Application
-- [ ] Wails-based app
-- [ ] Cross-platform support
-
----
-
-## 🎓 Educational Purpose
-
-This project demonstrates:
-
-- Full-stack development  
-- Real-time systems  
-- Cloud deployment  
-- System design  
-- Scalable architecture  
-
----
-
-## 👨‍💻 Author
-
-Ajinkya Shelke
-
-Built as a final-year BCA project with future real-world scalability in mind.
-
----
-
-⭐ If you like this project, give it a star!
+| Route              | Method   | Description              |
+|--------------------|----------|--------------------------|
+| /register          | GET/POST | User registration        |
+| /login             | GET/POST | User login               |
+| /logout            | GET      | Logout and clear session |
+| /dashboard         | GET      | View all users           |
+| /chat/{user_id}    | GET      | Chat with a user         |
+| /send_message      | POST     | Send a text message      |
+| /upload            | POST     | Upload a file            |
+| /download/{file_id}| GET      | Download a shared file   |
