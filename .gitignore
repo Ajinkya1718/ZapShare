@@ -60,8 +60,9 @@ logs/
 *.sqlite3
 
 # Application specific
-uploads/*
-!uploads/.gitkeep
+app/uploads/*
+!app/uploads/.gitkeep
+app/zapshare.db
 
 # OS
 Thumbs.db
