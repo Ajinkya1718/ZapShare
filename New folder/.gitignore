@@ -37,7 +37,6 @@ env/
 .env
 .env.local
 .env.*.local
-.env.production
 
 # Testing
 .pytest_cache/
@@ -64,9 +63,6 @@ logs/
 app/uploads/*
 !app/uploads/.gitkeep
 app/zapshare.db
-New folder/app/uploads/*
-!New folder/app/uploads/.gitkeep
-New folder/app/zapshare.db
 
 # OS
 Thumbs.db
@@ -81,7 +77,6 @@ frontend/build/
 
 # Misc cache
 .cache/
-.render/
 
 # Python version / env helpers
 .python-version

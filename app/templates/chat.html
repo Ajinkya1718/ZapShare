@@ -16,7 +16,7 @@
             <div class="sidebar-header">
                 <span class="sidebar-logo">⚡ ZapShare</span>
                 <div class="sidebar-actions">
-                    <span style="font-size:13px;color:var(--text-sub)">{{ username }}</span>
+                    <span class="sidebar-user-badge">{{ username }}</span>
                     <a href="/logout" class="btn-outline">Logout</a>
                 </div>
             </div>
@@ -46,8 +46,9 @@
 
             <!-- Chat header -->
             <div class="chat-header">
-                <a href="/dashboard" class="btn-outline" style="margin-right:4px;">←</a>
-                <div class="user-avatar" style="width:40px;height:40px;font-size:15px;">
+                <a href="/dashboard" class="chat-back-link" aria-label="Back to dashboard">←</a>
+                <button type="button" class="mobile-users-btn" id="mobileUsersBtn">Users</button>
+                <div class="user-avatar">
                     {{ receiver['username'][0]|upper }}
                 </div>
                 <div class="chat-header-info">
@@ -58,39 +59,63 @@
 
             <!-- Messages area -->
             <div class="messages-area" id="messagesArea">
-                {% if messages|length == 0 and files|length == 0 %}
-                <div style="text-align:center;color:var(--text-sub);font-size:13px;margin-top:32px;">
+                <div class="history-load-wrap {% if not has_more_messages %}is-hidden{% endif %}" id="loadOlderWrap">
+                    <button class="history-load-btn" id="loadOlderBtn" type="button">Load older messages</button>
+                </div>
+
+                {% if timeline|length == 0 %}
+                <div class="empty-inline">
                     No messages yet — say hello! 👋
                 </div>
                 {% endif %}
 
-                <!-- Render server-side messages -->
-                {% for msg in messages %}
-                <div class="bubble {% if msg['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
-                     data-id="{{ msg['id'] }}" data-type="msg">
-                    {% if msg['sender_id'] != user_id %}
-                    <div class="bubble-sender">{{ msg['sender_name'] }}</div>
+                <!-- Render server-side timeline -->
+                {% for item in timeline %}
+                {% if item['item_type'] == 'msg' %}
+                <div class="bubble {% if item['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
+                     data-id="{{ item['id'] }}" data-type="msg">
+                    {% if item['sender_id'] != user_id %}
+                    <div class="bubble-sender">{{ item['sender_name'] }}</div>
                     {% endif %}
-                    <span class="bubble-text">{{ msg['content'] }}</span>
-                    <span class="bubble-time">{{ msg['timestamp'][11:16] }}</span>
+                    <span class="bubble-text">{{ item['content'] }}</span>
+                    <span class="bubble-time">{{ item['timestamp'][11:16] }}</span>
                 </div>
-                {% endfor %}
-
-                <!-- Render server-side files -->
-                {% for f in files %}
-                <div class="bubble file-bubble {% if f['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
-                     data-id="{{ f['id'] }}" data-type="file">
-                    <span class="file-icon">📎</span>
+                {% else %}
+                <div class="bubble file-bubble {% if item['sender_id'] == user_id %}sent{% else %}recv{% endif %}"
+                     data-id="{{ item['id'] }}" data-type="file">
                     <div class="file-info">
-                        {% if f['sender_id'] != user_id %}
-                        <div class="bubble-sender">{{ f['sender_name'] }}</div>
+                        {% if item['sender_id'] != user_id %}
+                        <div class="bubble-sender">{{ item['sender_name'] }}</div>
                         {% endif %}
-                        <div class="file-name">
-                            <a href="/download/{{ f['id'] }}" class="file-link">{{ f['filename'] }}</a>
+
+                        {% if item['is_image'] %}
+                        <a href="/download/{{ item['id'] }}" class="file-preview-link" target="_blank" rel="noopener noreferrer">
+                            <img src="/download/{{ item['id'] }}"
+                                 alt="{{ item['filename'] }}"
+                                 class="file-preview-image"
+                                 loading="lazy"
+                                 decoding="async">
+                        </a>
+                        {% else %}
+                        <div class="file-card-head">
+                            <span class="file-icon">📎</span>
+                            <div class="file-name">
+                                <a href="/download/{{ item['id'] }}" class="file-link">{{ item['filename'] }}</a>
+                            </div>
                         </div>
-                        <div class="file-size">{{ f['timestamp'][11:16] }}</div>
+                        {% endif %}
+
+                        <div class="file-meta">
+                            {% if item['is_image'] %}
+                            <a href="/download/{{ item['id'] }}" class="file-link">Open full image</a>
+                            {% else %}
+                            Tap to download
+                            {% endif %}
+                        </div>
+                        <div class="file-size">{{ item['timestamp'][11:16] }}</div>
                     </div>
                 </div>
+                {% endif %}
                 {% endfor %}
             </div>
 
@@ -127,6 +152,8 @@
         // Start polling from last rendered IDs so we don't re-fetch existing messages
         let lastMsgId  = {{ messages[-1]['id']  if messages  else 0 }};
         let lastFileId = {{ files[-1]['id']      if files     else 0 }};
+        let beforeMsgId = {{ oldest_msg_id if oldest_msg_id else 0 }};
+        const HAS_MORE_MESSAGES = {{ 'true' if has_more_messages else 'false' }};
     </script>
     <script src="/static/script.js"></script>
 </body>

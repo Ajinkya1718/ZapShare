@@ -14,10 +14,9 @@ Run with:  uvicorn main:app --reload
 
 # ---- Imports ----
 from fastapi import FastAPI, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 import hashlib
 import os
@@ -29,37 +28,18 @@ from database import get_db, init_db
 # ---- Base Directory ----
 # This ensures paths work correctly no matter where the server is started from
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SESSION_SECRET_KEY = os.getenv("SECRET_KEY", "zapshare-local-dev-secret-change-me")
-CHAT_PAGE_SIZE = 50
-FILE_PREVIEW_PAGE_SIZE = 16
-HISTORY_PAGE_SIZE = 40
-STATIC_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 
 # ---- App Setup ----
 app = FastAPI(title="ZapShare")
 
 # Secret key for session middleware (keeps users logged in)
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY)
-app.add_middleware(GZipMiddleware, minimum_size=700)
+app.add_middleware(SessionMiddleware, secret_key="zapshare-secret-key-2026")
 
 # Mount static files (CSS, JS) so the browser can load them
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # Setup Jinja2 templates (HTML files)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-
-
-@app.middleware("http")
-async def cache_static_assets(request: Request, call_next):
-    """Apply browser cache headers for static files to reduce repeat payloads."""
-    response = await call_next(request)
-    if request.url.path.startswith("/static/") and response.status_code == 200:
-        if "Cache-Control" not in response.headers:
-            response.headers["Cache-Control"] = (
-                f"public, max-age={STATIC_CACHE_MAX_AGE_SECONDS}, immutable"
-            )
-    return response
 
 
 # ---- Initialize Database on Startup ----
@@ -86,33 +66,6 @@ def get_current_user(request: Request):
     Returns user_id if logged in, None otherwise.
     """
     return request.session.get("user_id")
-
-
-def is_image_filename(filename: str) -> bool:
-    ext = os.path.splitext(filename.lower())[1]
-    return ext in IMAGE_EXTENSIONS
-
-
-def serialize_file_row(row) -> dict:
-    item = dict(row)
-    item["is_image"] = is_image_filename(item["filename"])
-    return item
-
-
-def serialize_message_row(row) -> dict:
-    return dict(row)
-
-
-def to_timeline_items(messages, files):
-    timeline = []
-    for msg in messages:
-        timeline.append({"item_type": "msg", **serialize_message_row(msg)})
-    for file_row in files:
-        timeline.append({"item_type": "file", **serialize_file_row(file_row)})
-
-    # SQLite timestamp string format sorts correctly lexicographically.
-    timeline.sort(key=lambda item: (item["timestamp"], item["item_type"], item["id"]))
-    return timeline
 
 
 # ============================================================
@@ -273,66 +226,39 @@ def chat_page(request: Request, receiver_id: int):
         db.close()
         return RedirectResponse(url="/dashboard", status_code=302)
 
-    # Get all users for the sidebar (excluding self)
-    users = db.execute(
-        "SELECT id, username FROM users WHERE id != ?", (user_id,)
-    ).fetchall()
-
-    # Load only recent messages for faster initial render.
+    # Get all messages between these two users (in both directions)
     messages = db.execute("""
         SELECT m.*, u.username as sender_name
         FROM messages m
         JOIN users u ON m.sender_id = u.id
         WHERE (m.sender_id = ? AND m.receiver_id = ?)
            OR (m.sender_id = ? AND m.receiver_id = ?)
-        ORDER BY m.id DESC
-        LIMIT ?
-    """, (user_id, receiver_id, receiver_id, user_id, CHAT_PAGE_SIZE)).fetchall()
-    messages = list(reversed(messages))
+        ORDER BY m.timestamp ASC
+    """, (user_id, receiver_id, receiver_id, user_id)).fetchall()
 
-    # Load recent files only to keep first render fast.
+    # Get all files shared between these two users
     files = db.execute("""
         SELECT f.*, u.username as sender_name
         FROM files f
         JOIN users u ON f.sender_id = u.id
         WHERE (f.sender_id = ? AND f.receiver_id = ?)
            OR (f.sender_id = ? AND f.receiver_id = ?)
-        ORDER BY f.id DESC
-        LIMIT ?
-    """, (user_id, receiver_id, receiver_id, user_id, FILE_PREVIEW_PAGE_SIZE)).fetchall()
-    files = list(reversed(files))
-
-    oldest_msg_id = messages[0]["id"] if messages else 0
-    has_more_messages = False
-    if oldest_msg_id:
-        has_more_messages = db.execute("""
-            SELECT 1
-            FROM messages
-            WHERE ((sender_id = ? AND receiver_id = ?)
-               OR  (sender_id = ? AND receiver_id = ?))
-              AND id < ?
-            LIMIT 1
-        """, (user_id, receiver_id, receiver_id, user_id, oldest_msg_id)).fetchone() is not None
+        ORDER BY f.timestamp ASC
+    """, (user_id, receiver_id, receiver_id, user_id)).fetchall()
 
     db.close()
-
-    timeline = to_timeline_items(messages, files)
 
     return templates.TemplateResponse("chat.html", {
         "request": request,
         "username": request.session.get("username"),
         "user_id": user_id,
         "receiver": receiver,
-        "users": users,
         "messages": messages,
-        "files": files,
-        "timeline": timeline,
-        "has_more_messages": has_more_messages,
-        "oldest_msg_id": oldest_msg_id
+        "files": files
     })
 
 
-# ---- 7. SEND MESSAGE (form-based, redirects back) ----
+# ---- 7. SEND MESSAGE ----
 @app.post("/send_message")
 def send_message(
     request: Request,
@@ -354,149 +280,6 @@ def send_message(
 
     # Redirect back to the chat page
     return RedirectResponse(url=f"/chat/{receiver_id}", status_code=302)
-
-
-# ---- 7b. SEND MESSAGE (JSON API — used by auto-refresh JS) ----
-@app.post("/api/send")
-async def api_send_message(request: Request):
-    """
-    Accepts a JSON POST with {receiver_id, content}.
-    Saves the message and returns it as JSON.
-    Used by the frontend fetch() call so page doesn't reload on send.
-    """
-    user_id = get_current_user(request)
-    if not user_id:
-        return JSONResponse({"error": "not logged in"}, status_code=401)
-
-    data = await request.json()
-    receiver_id = data.get("receiver_id")
-    content = data.get("content", "").strip()
-
-    if not content or not receiver_id:
-        return JSONResponse({"error": "missing fields"}, status_code=400)
-
-    db = get_db()
-    cursor = db.execute(
-        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-        (user_id, receiver_id, content)
-    )
-    msg_id = cursor.lastrowid
-    db.commit()
-
-    # Fetch back the saved message with timestamp and sender name
-    msg = db.execute("""
-        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
-        FROM messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE m.id = ?
-    """, (msg_id,)).fetchone()
-    db.close()
-
-    return dict(msg)
-
-
-# ---- 7c. POLL MESSAGES (JSON API — used for auto-refresh) ----
-@app.get("/api/messages/{receiver_id}")
-def api_get_messages(
-    request: Request,
-    receiver_id: int,
-    after_msg: int = 0,
-    after_file: int = 0
-):
-    """
-    Returns new messages and files as JSON.
-    'after_msg' and 'after_file' are the last IDs the client already has.
-    The client calls this every 2 seconds to get new content.
-    """
-    user_id = get_current_user(request)
-    if not user_id:
-        return JSONResponse({"error": "not logged in"}, status_code=401)
-
-    db = get_db()
-
-    # Get new messages with ID greater than what the client already has
-    messages = db.execute("""
-        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
-        FROM messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE ((m.sender_id = ? AND m.receiver_id = ?)
-           OR  (m.sender_id = ? AND m.receiver_id = ?))
-          AND m.id > ?
-        ORDER BY m.timestamp ASC
-    """, (user_id, receiver_id, receiver_id, user_id, after_msg)).fetchall()
-
-    # Get new files with ID greater than what the client already has
-    files = db.execute("""
-        SELECT f.id, f.filename, f.timestamp, f.sender_id, u.username as sender_name
-        FROM files f
-        JOIN users u ON f.sender_id = u.id
-        WHERE ((f.sender_id = ? AND f.receiver_id = ?)
-           OR  (f.sender_id = ? AND f.receiver_id = ?))
-          AND f.id > ?
-        ORDER BY f.timestamp ASC
-    """, (user_id, receiver_id, receiver_id, user_id, after_file)).fetchall()
-
-    db.close()
-
-    return {
-        "messages": [serialize_message_row(m) for m in messages],
-        "files": [serialize_file_row(f) for f in files],
-        "user_id": user_id
-    }
-
-
-@app.get("/api/messages/{receiver_id}/history")
-def api_get_messages_history(
-    request: Request,
-    receiver_id: int,
-    before_msg: int,
-    limit: int = HISTORY_PAGE_SIZE
-):
-    """
-    Loads older message history in pages.
-    This keeps initial chat render light while still allowing deep scrollback.
-    """
-    user_id = get_current_user(request)
-    if not user_id:
-        return JSONResponse({"error": "not logged in"}, status_code=401)
-
-    if before_msg <= 0:
-        return JSONResponse({"error": "invalid cursor"}, status_code=400)
-
-    page_size = max(10, min(limit, 100))
-
-    db = get_db()
-    older = db.execute("""
-        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
-        FROM messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE ((m.sender_id = ? AND m.receiver_id = ?)
-           OR  (m.sender_id = ? AND m.receiver_id = ?))
-          AND m.id < ?
-        ORDER BY m.id DESC
-        LIMIT ?
-    """, (user_id, receiver_id, receiver_id, user_id, before_msg, page_size)).fetchall()
-
-    older = list(reversed(older))
-    oldest_loaded = older[0]["id"] if older else before_msg
-
-    has_more = False
-    if older:
-        has_more = db.execute("""
-            SELECT 1
-            FROM messages
-            WHERE ((sender_id = ? AND receiver_id = ?)
-               OR  (sender_id = ? AND receiver_id = ?))
-              AND id < ?
-            LIMIT 1
-        """, (user_id, receiver_id, receiver_id, user_id, oldest_loaded)).fetchone() is not None
-    db.close()
-
-    return {
-        "messages": [serialize_message_row(m) for m in older],
-        "has_more": has_more,
-        "next_before_msg": oldest_loaded
-    }
 
 
 # ---- 8. UPLOAD FILE ----

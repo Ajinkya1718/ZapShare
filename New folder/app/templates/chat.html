@@ -1,0 +1,106 @@
+<!-- chat.html — Chat Page for ZapShare -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZapShare — Chat with {{ receiver['username'] }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Dark Mode Toggle -->
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">🌙</button>
+
+    <!-- Top Navigation Bar -->
+    <nav class="navbar">
+        <div class="nav-left">
+            <a href="/dashboard" class="btn btn-outline btn-sm">← Back</a>
+            <span class="nav-logo">⚡ ZapShare</span>
+        </div>
+        <div class="nav-right">
+            <span class="nav-user">Chatting with <strong>{{ receiver['username'] }}</strong></span>
+            <a href="/logout" class="btn btn-outline btn-sm">Logout</a>
+        </div>
+    </nav>
+
+    <!-- Chat Container -->
+    <div class="chat-container">
+
+        <!-- Messages Section -->
+        <div class="chat-card">
+            <h3 class="section-title">💬 Messages</h3>
+
+            <div class="messages-box" id="messagesBox">
+                {% if messages|length == 0 and files|length == 0 %}
+                <div class="empty-state">
+                    <p>No messages yet. Say hello! 👋</p>
+                </div>
+                {% endif %}
+
+                <!-- Display all text messages -->
+                {% for msg in messages %}
+                <div class="message {% if msg['sender_id'] == user_id %}sent{% else %}received{% endif %}">
+                    <div class="message-header">
+                        <strong>{{ msg['sender_name'] }}</strong>
+                        <span class="message-time">{{ msg['timestamp'] }}</span>
+                    </div>
+                    <div class="message-body">{{ msg['content'] }}</div>
+                </div>
+                {% endfor %}
+
+                <!-- Display all shared files -->
+                {% for f in files %}
+                <div class="message file-message {% if f['sender_id'] == user_id %}sent{% else %}received{% endif %}">
+                    <div class="message-header">
+                        <strong>{{ f['sender_name'] }}</strong>
+                        <span class="message-time">{{ f['timestamp'] }}</span>
+                    </div>
+                    <div class="message-body file-body">
+                        📎 <a href="/download/{{ f['id'] }}" class="file-link">{{ f['filename'] }}</a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Send Message Form -->
+        <div class="chat-card send-card">
+            <h3 class="section-title">✉️ Send a Message</h3>
+            <form method="POST" action="/send_message" class="send-form">
+                <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
+                <div class="input-row">
+                    <input type="text" name="content" placeholder="Type your message..." 
+                           required class="message-input">
+                    <button type="submit" class="btn btn-primary btn-send">Send</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Upload File Form -->
+        <div class="chat-card send-card">
+            <h3 class="section-title">📁 Share a File</h3>
+            <form method="POST" action="/upload" enctype="multipart/form-data" class="send-form">
+                <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
+                <div class="input-row">
+                    <input type="file" name="file" required class="file-input">
+                    <button type="submit" class="btn btn-primary btn-send">Upload</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Refresh Button -->
+        <div class="refresh-section">
+            <button onclick="location.reload()" class="btn btn-outline">
+                🔄 Refresh Chat
+            </button>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+    <script>
+        // Auto-scroll to the bottom of the messages box
+        const box = document.getElementById('messagesBox');
+        if (box) box.scrollTop = box.scrollHeight;
+    </script>
+</body>
+</html>

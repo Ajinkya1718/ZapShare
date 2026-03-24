@@ -17,7 +17,7 @@
             <div class="sidebar-header">
                 <span class="sidebar-logo">⚡ ZapShare</span>
                 <div class="sidebar-actions">
-                    <span style="font-size:13px;color:var(--text-sub)">{{ username }}</span>
+                    <span class="sidebar-user-badge">{{ username }}</span>
                     <a href="/logout" class="btn-outline">Logout</a>
                 </div>
             </div>
@@ -45,9 +45,11 @@
         <!-- ═══ RIGHT PANEL — empty state ═══ -->
         <main class="chat-panel">
             <div class="chat-empty">
-                <div class="chat-empty-icon">💬</div>
-                <div class="chat-empty-title">ZapShare</div>
-                <div class="chat-empty-sub">Select a user from the left to start chatting</div>
+                <div class="chat-empty-card">
+                    <div class="chat-empty-icon">💬</div>
+                    <div class="chat-empty-title">ZapShare</div>
+                    <div class="chat-empty-sub">Select a user from the left to start chatting</div>
+                </div>
             </div>
         </main>
 

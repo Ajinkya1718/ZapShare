@@ -75,20 +75,6 @@ def init_db():
         )
     """)
 
-    # Query speed-ups for polling, pagination, and conversation retrieval.
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_sender_receiver_id ON messages(sender_id, receiver_id, id)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_receiver_sender_id ON messages(receiver_id, sender_id, id)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_files_sender_receiver_id ON files(sender_id, receiver_id, id)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_files_receiver_sender_id ON files(receiver_id, sender_id, id)"
-    )
-
     conn.commit()
     conn.close()
     print("✅ Database initialized successfully!")

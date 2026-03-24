@@ -4,12 +4,9 @@
 services:
   - type: web
     name: zapshare
-    plan: free
     runtime: python
-    buildCommand: pip install --upgrade pip && pip install -r app/requirements.txt
-    startCommand: cd app && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
-    healthCheckPath: /login
-    autoDeploy: true
+    buildCommand: pip install -r app/requirements.txt
+    startCommand: cd app && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SECRET_KEY
         generateValue: true
