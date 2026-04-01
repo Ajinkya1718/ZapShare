@@ -12,11 +12,18 @@ import os
 import time
 from contextlib import contextmanager
 
-# Base directory = folder where this file lives
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Application code directory (where this file lives)
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Database file will be created in the backend folder
-DATABASE_NAME = os.path.join(BASE_DIR, "zapshare.db")
+# DATA_DIR stores mutable runtime state (db/uploads). On Render, point this to
+# a mounted persistent disk, e.g. /var/data.
+DATA_DIR = os.path.abspath(os.getenv("DATA_DIR", APP_DIR))
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Database file location can be overridden directly if needed.
+DATABASE_NAME = os.path.abspath(
+    os.getenv("DATABASE_NAME", os.path.join(DATA_DIR, "zapshare.db"))
+)
 
 # SQLite concurrency tuning.
 # WAL allows concurrent readers during writes (important for polling-based UIs).
@@ -174,5 +181,5 @@ def init_db():
 
 
 # Create the uploads folder if it doesn't exist
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOADS_DIR = os.path.abspath(os.getenv("UPLOADS_DIR", os.path.join(DATA_DIR, "uploads")))
 os.makedirs(UPLOADS_DIR, exist_ok=True)

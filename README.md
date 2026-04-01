@@ -32,7 +32,7 @@ ZapShare is a lightweight “chat + send files” web app built with server-rend
 ### How it works
 
 - Browser loads the chat UI from `/chat/{receiver_id}`
-- Messages and files are stored in SQLite (`app/zapshare.db`) and on disk (`app/uploads/`)
+- Messages and files are stored in SQLite (`DATA_DIR/zapshare.db`) and on disk (`DATA_DIR/uploads/`)
 - The frontend:
   - sends messages via `POST /api/send`
   - polls `GET /api/messages/{receiver_id}` every ~2s (auto backoff when offline)
@@ -52,7 +52,7 @@ ZapShare is a lightweight “chat + send files” web app built with server-rend
 
 - Backend: FastAPI + Uvicorn
 - Views: Jinja2 templates
-- DB: SQLite (stored in `app/zapshare.db`)
+- DB: SQLite (stored in `DATA_DIR/zapshare.db`)
 - Static: vanilla JS + CSS
 
 ## Getting started (local)
@@ -95,8 +95,13 @@ Open http://127.0.0.1:8000
 
 On first startup, the app creates:
 
-- SQLite DB: `app/zapshare.db`
-- Upload directory: `app/uploads/`
+- SQLite DB: `DATA_DIR/zapshare.db`
+- Upload directory: `DATA_DIR/uploads/`
+
+Defaults:
+
+- Local/dev without `DATA_DIR`: `DATA_DIR` resolves to `app/`
+- Render in this repo: `DATA_DIR=/var/data` (mounted persistent disk)
 
 ## Configuration
 
@@ -105,6 +110,9 @@ On first startup, the app creates:
 | Variable | Required | Purpose |
 |---|---:|---|
 | `SECRET_KEY` | Recommended (required for real production) | Signs the session cookie used by Starlette `SessionMiddleware` |
+| `DATA_DIR` | Recommended for deployment | Directory for persistent runtime data (`zapshare.db`, `uploads/`) |
+| `DATABASE_NAME` | Optional | Full path override for SQLite DB file |
+| `UPLOADS_DIR` | Optional | Full path override for uploads directory |
 
 > **Note**
 > If `SECRET_KEY` is not set, the app falls back to a local-dev value. Set it in any deployed environment.
@@ -124,8 +132,8 @@ This repo includes a Render Blueprint at [render.yaml](render.yaml).
 
 ZapShare stores:
 
-- Messages/users metadata in a local SQLite DB (`app/zapshare.db`)
-- Uploaded files on disk (`app/uploads/`)
+- Messages/users metadata in a local SQLite DB (`DATA_DIR/zapshare.db`)
+- Uploaded files on disk (`DATA_DIR/uploads/`)
 
 If your hosting environment has an ephemeral filesystem, both may be lost on restart/redeploy unless you configure persistent storage.
 
@@ -135,7 +143,7 @@ On many PaaS setups (including some Render plans/configs), the filesystem can be
 
 For production-grade persistence, use one of these approaches:
 
-- Attach a persistent disk for `app/zapshare.db` and `app/uploads/`
+- Attach a persistent disk and set `DATA_DIR` to that mount path (this repo uses `/var/data`)
 - Move the DB to a managed database (e.g., Postgres)
 - Store uploads in object storage (e.g., S3-compatible or Azure Blob)
 
@@ -143,8 +151,8 @@ For production-grade persistence, use one of these approaches:
 
 For simple backups in a self-hosted environment, stop the app and copy:
 
-- `app/zapshare.db`
-- `app/uploads/`
+- `DATA_DIR/zapshare.db`
+- `DATA_DIR/uploads/`
 
 ## Routes & APIs
 
@@ -208,7 +216,7 @@ app/
   requirements.txt  # Dependencies
   templates/        # Jinja2 HTML templates
   static/           # CSS/JS assets
-  uploads/          # Uploaded files (created on startup)
+  uploads/          # Local/dev uploads (DATA_DIR default points here)
 render.yaml         # Render blueprint
 README.md
 ```
@@ -248,5 +256,5 @@ Suggested PR checklist:
 ## Troubleshooting
 
 - “Module not found” when starting: run from `app/` as shown (`cd app && uvicorn main:app ...`).
-- Can’t upload files: ensure `app/uploads/` is writable by the process.
-- Render deploy boots but data disappears after redeploy: configure persistent storage or move DB/uploads off-disk.
+- Can’t upload files: ensure `DATA_DIR/uploads/` is writable by the process.
+- Render deploy boots but data disappears after redeploy: verify persistent disk is mounted and `DATA_DIR` points to it.

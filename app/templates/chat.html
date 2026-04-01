@@ -121,26 +121,30 @@
 
             <!-- Input area -->
             <div class="input-area">
+                <div class="composer-wrap" id="composerWrap">
+                    <button class="attach-btn" id="attachBtn" type="button" aria-label="More actions" aria-expanded="false">+</button>
 
-                <!-- Text message row -->
-                <div class="input-row">
-                    <input type="text" class="msg-input" id="msgInput"
-                           placeholder="Type a message…" autocomplete="off">
+                    <div class="attach-menu" id="attachMenu" role="menu" aria-hidden="true">
+                        <button type="button" class="attach-menu-item" id="pickMediaBtn" role="menuitem">
+                            <span class="attach-icon">🖼️</span>
+                            <span>Photo / Video</span>
+                        </button>
+                        <button type="button" class="attach-menu-item" id="pickDocBtn" role="menuitem">
+                            <span class="attach-icon">📄</span>
+                            <span>Document</span>
+                        </button>
+                    </div>
+
+                    <input type="text" class="msg-input" id="msgInput" placeholder="Type a message" autocomplete="off">
+
                     <span id="sendingIndicator">sending…</span>
-                    <button class="send-btn" id="sendBtn" title="Send">➤</button>
+                    <button class="send-btn" id="sendBtn" title="Send" aria-label="Send message">➤</button>
                 </div>
 
-                <!-- File upload row -->
-                <form method="POST" action="/upload" enctype="multipart/form-data" class="file-row" id="fileForm">
+                <form method="POST" action="/upload" enctype="multipart/form-data" id="fileForm" class="sr-only">
                     <input type="hidden" name="receiver_id" value="{{ receiver['id'] }}">
-                    <input type="file" name="file" id="fileUploadInput"
-                           onchange="updateFileLabel(this)">
-                    <label for="fileUploadInput" class="file-input-label" id="fileLabel">
-                        📎 Choose file to share…
-                    </label>
-                    <button type="submit" class="upload-btn">Send File</button>
+                    <input type="file" name="file" id="fileUploadInput">
                 </form>
-
             </div>
         </main>
     </div>

@@ -29,7 +29,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 # Import our database functions
-from database import db_session, get_db, init_db, is_db_locked_error, run_write_transaction
+from database import UPLOADS_DIR, db_session, init_db, is_db_locked_error, run_write_transaction
 
 # ---- Base Directory ----
 # This ensures paths work correctly no matter where the server is started from
@@ -120,10 +120,9 @@ def build_upload_path(sender_id: int, receiver_id: int, original_filename: str) 
     """Create a unique, traversal-safe storage path for an uploaded file."""
     display_name = sanitize_filename(original_filename)
     storage_name = f"{sender_id}_{receiver_id}_{uuid.uuid4().hex}_{display_name}"
-    uploads_dir = os.path.join(BASE_DIR, "uploads")
-    file_path = os.path.abspath(os.path.join(uploads_dir, storage_name))
+    file_path = os.path.abspath(os.path.join(UPLOADS_DIR, storage_name))
 
-    uploads_root = os.path.abspath(uploads_dir) + os.sep
+    uploads_root = os.path.abspath(UPLOADS_DIR) + os.sep
     if not file_path.startswith(uploads_root):
         raise ValueError("Invalid upload path")
 
@@ -612,7 +611,7 @@ def download_file(request: Request, file_id: int):
         return JSONResponse({"error": "not found"}, status_code=404)
 
     file_path = os.path.abspath(file_record["filepath"])
-    uploads_root = os.path.abspath(os.path.join(BASE_DIR, "uploads")) + os.sep
+    uploads_root = os.path.abspath(UPLOADS_DIR) + os.sep
     if not file_path.startswith(uploads_root) or not os.path.exists(file_path):
         return JSONResponse({"error": "not found"}, status_code=404)
 

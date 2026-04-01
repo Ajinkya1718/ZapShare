@@ -33,6 +33,72 @@ function toggleTheme() {
 })();
 
 
+/* ---- 1c. ATTACHMENT SUBMENU ---- */
+(function setupAttachmentMenu() {
+    const wrap = document.getElementById('composerWrap');
+    const attachBtn = document.getElementById('attachBtn');
+    const menu = document.getElementById('attachMenu');
+    const pickMediaBtn = document.getElementById('pickMediaBtn');
+    const pickDocBtn = document.getElementById('pickDocBtn');
+    const fileInput = document.getElementById('fileUploadInput');
+    const fileForm = document.getElementById('fileForm');
+
+    if (!wrap || !attachBtn || !menu || !pickMediaBtn || !pickDocBtn || !fileInput || !fileForm) return;
+
+    function closeMenu() {
+        menu.classList.remove('open');
+        menu.setAttribute('aria-hidden', 'true');
+        attachBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openMenu() {
+        menu.classList.add('open');
+        menu.setAttribute('aria-hidden', 'false');
+        attachBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    attachBtn.addEventListener('click', () => {
+        if (menu.classList.contains('open')) {
+            closeMenu();
+        } else {
+            openMenu();
+        }
+    });
+
+    pickMediaBtn.addEventListener('click', () => {
+        closeMenu();
+        fileInput.setAttribute('accept', 'image/*,video/*');
+        fileInput.value = '';
+        fileInput.click();
+    });
+
+    pickDocBtn.addEventListener('click', () => {
+        closeMenu();
+        fileInput.setAttribute('accept', '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,.7z,.json,.xml');
+        fileInput.value = '';
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files && fileInput.files[0]) {
+            fileForm.submit();
+        }
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!wrap.contains(event.target)) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeMenu();
+        }
+    });
+})();
+
+
 /* ---- 1b. MOBILE CHAT LAYOUT ---- */
 (function setupMobileLayout() {
     const layout = document.querySelector('.app-layout');
@@ -366,13 +432,5 @@ function escHtml(str) {
 
 
 /* ---- 4. FILE LABEL UPDATE ---- */
-function updateFileLabel(input) {
-    const label = document.getElementById('fileLabel');
-    if (!label) return;
-    if (input.files && input.files[0]) {
-        label.textContent = '📎 ' + input.files[0].name;
-    } else {
-        label.textContent = '📎 Choose file to share…';
-    }
-}
+function updateFileLabel() {}
 
