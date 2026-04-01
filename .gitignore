@@ -57,16 +57,19 @@ logs/
 
 # Database
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Application specific
 app/uploads/*
 !app/uploads/.gitkeep
 app/zapshare.db
-New folder/app/uploads/*
-!New folder/app/uploads/.gitkeep
-New folder/app/zapshare.db
 
 # OS
 Thumbs.db

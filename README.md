@@ -1,85 +1,252 @@
-# ZapShare -- Simple Chat and File Sharing Web App
+# ZapShare
 
-A beginner-friendly web-based chat application built with Python, FastAPI, and SQLite.
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)
+![Render](https://img.shields.io/badge/Deploy-Render-46E3B7?logo=render&logoColor=000)
+
+FastAPI + SQLite chat and file-sharing app with a polished, responsive UI. Uses session-based auth, near‑real‑time updates via polling with reconnect backoff, and image preview cards for shared files.
+
+**Best for:** demos, learning projects, and small team prototypes.
+
+## Table of contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Getting started (local)](#getting-started-local)
+- [Configuration](#configuration)
+- [Deployment (Render)](#deployment-render)
+- [Data persistence](#data-persistence)
+- [Routes & APIs](#routes--apis)
+- [Project layout](#project-layout-source-of-truth)
+- [Production hardening](#production-hardening-notes)
+- [License](#license)
+- [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+ZapShare is a lightweight “chat + send files” web app built with server-rendered pages (Jinja2) and a small JSON API for live updates.
+
+### How it works
+
+- Browser loads the chat UI from `/chat/{receiver_id}`
+- Messages and files are stored in SQLite (`app/zapshare.db`) and on disk (`app/uploads/`)
+- The frontend:
+  - sends messages via `POST /api/send`
+  - polls `GET /api/messages/{receiver_id}` every ~2s (auto backoff when offline)
+  - loads older messages via `GET /api/messages/{receiver_id}/history`
 
 ## Features
 
-- User Registration and Login
-- Dashboard to see all registered users
-- Real-time chat with polling + reconnect backoff
-- Lightweight message pagination for long chats
-- File sharing (upload and download) with image preview cards
-- Dark / Light mode toggle
-- GZip compression and static asset cache headers
+- Register/login users (session cookie)
+- Dashboard listing all other users
+- 1:1 chat timeline (messages + files), auto-updates every ~2s
+- Message history pagination (load older messages in pages)
+- File sharing (upload + download), with inline image previews
+- Dark/light mode toggle
+- GZip compression + cache headers for static assets
 
-## Tech Stack
+## Tech stack
 
-- Backend: Python 3.10+, FastAPI, Uvicorn
-- Database: SQLite (via sqlite3 module)
-- Frontend: HTML, CSS, JavaScript (Jinja2 templates)
-- Auth: Session-based login with SHA-256 password hashing
+- Backend: FastAPI + Uvicorn
+- Views: Jinja2 templates
+- DB: SQLite (stored in `app/zapshare.db`)
+- Static: vanilla JS + CSS
 
-## Environment Variables
+## Getting started (local)
 
-- SECRET_KEY: used by FastAPI SessionMiddleware. Required in production.
+### Prerequisites
 
-## Project Structure
+- Python 3.11+ recommended (Render uses 3.11 in this repo)
 
-    ZapShare/
-     app/
-        main.py           # All routes and app logic
-        database.py       # SQLite database setup
-        requirements.txt  # Python dependencies
-        templates/        # HTML pages
-           login.html
-           register.html
-           dashboard.html
-           chat.html
-        static/           # CSS and JS
-           style.css
-           script.js
-        uploads/          # Uploaded files
-     render.yaml           # Render deployment config
-     README.md
+### 1) Create & activate a virtualenv
 
-## How to Run Locally
+Windows (PowerShell):
 
-1. Install dependencies:
-       pip install -r app/requirements.txt
+```powershell
+python -m venv .venv
+./.venv/Scripts/Activate.ps1
+```
 
-2. Start the server:
-       cd app
-       uvicorn main:app --reload
+macOS/Linux:
 
-3. Open browser: http://127.0.0.1:8000
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-## Deploy on Render
+### 2) Install dependencies
 
-1. Push this repo to GitHub
-2. Go to https://render.com and connect your repo
-3. Use render.yaml (recommended), or set these manually:
-   Build Command:  pip install --upgrade pip && pip install -r app/requirements.txt
-   Start Command:  cd app && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
-   Health Check Path: /login
+```bash
+pip install --upgrade pip
+pip install -r app/requirements.txt
+```
 
-Render env vars:
-   SECRET_KEY = generate value
-   PYTHON_VERSION = 3.11.0
+### 3) Run the app
 
-Or simply click New > Blueprint and Render will auto-detect render.yaml.
+```bash
+cd app
+uvicorn main:app --reload
+```
 
-## Routes
+Open http://127.0.0.1:8000
 
-| Route              | Method   | Description              |
-|--------------------|----------|--------------------------|
-| /register          | GET/POST | User registration        |
-| /login             | GET/POST | User login               |
-| /logout            | GET      | Logout and clear session |
-| /dashboard         | GET      | View all users           |
-| /chat/{user_id}    | GET      | Chat with a user         |
-| /send_message      | POST     | Send a text message      |
-| /api/send          | POST     | Send text via JSON       |
-| /api/messages/{user_id} | GET | Poll latest messages/files |
-| /api/messages/{user_id}/history | GET | Load older paginated messages |
-| /upload            | POST     | Upload a file            |
-| /download/{file_id}| GET      | Download a shared file   |
+On first startup, the app creates:
+
+- SQLite DB: `app/zapshare.db`
+- Upload directory: `app/uploads/`
+
+## Configuration
+
+### Environment variables
+
+| Variable | Required | Purpose |
+|---|---:|---|
+| `SECRET_KEY` | Recommended (required for real production) | Signs the session cookie used by Starlette `SessionMiddleware` |
+
+> **Note**
+> If `SECRET_KEY` is not set, the app falls back to a local-dev value. Set it in any deployed environment.
+
+## Deployment (Render)
+
+This repo includes a Render Blueprint at [render.yaml](render.yaml).
+
+- Build command: `pip install --upgrade pip && pip install -r app/requirements.txt`
+- Start command: `cd app && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'`
+- Health check: `/login`
+- Env vars:
+  - `SECRET_KEY`: auto-generated by Render (per render.yaml)
+  - `PYTHON_VERSION`: `3.11.0`
+
+## Data persistence
+
+ZapShare stores:
+
+- Messages/users metadata in a local SQLite DB (`app/zapshare.db`)
+- Uploaded files on disk (`app/uploads/`)
+
+If your hosting environment has an ephemeral filesystem, both may be lost on restart/redeploy unless you configure persistent storage.
+
+### Render persistence (important)
+
+On many PaaS setups (including some Render plans/configs), the filesystem can be ephemeral.
+
+For production-grade persistence, use one of these approaches:
+
+- Attach a persistent disk for `app/zapshare.db` and `app/uploads/`
+- Move the DB to a managed database (e.g., Postgres)
+- Store uploads in object storage (e.g., S3-compatible or Azure Blob)
+
+### Backups (SQLite)
+
+For simple backups in a self-hosted environment, stop the app and copy:
+
+- `app/zapshare.db`
+- `app/uploads/`
+
+## Routes & APIs
+
+Pages:
+
+| Route | Method | Purpose |
+|---|---:|---|
+| `/` | GET | Redirects to `/login` or `/dashboard` |
+| `/register` | GET/POST | Create account |
+| `/login` | GET/POST | Sign in |
+| `/logout` | GET | Clear session |
+| `/dashboard` | GET | List users (excluding self) |
+| `/chat/{receiver_id}` | GET | Chat UI (timeline + upload form) |
+
+Actions:
+
+| Route | Method | Purpose |
+|---|---:|---|
+| `/send_message` | POST | Send text message (form submit; redirects) |
+| `/upload` | POST | Upload file to share in chat (form submit; redirects) |
+| `/download/{file_id}` | GET | Download file by ID |
+
+JSON APIs (used by the frontend):
+
+| Route | Method | Purpose |
+|---|---:|---|
+| `/api/send` | POST | Send message via JSON (no page reload) |
+| `/api/messages/{receiver_id}` | GET | Poll new messages/files after last IDs |
+| `/api/messages/{receiver_id}/history` | GET | Fetch older messages (pagination) |
+
+### API examples
+
+Send a message (JSON):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"receiver_id": 2, "content": "Hello"}'
+```
+
+Poll for updates (IDs are cursors for de-duplication):
+
+```bash
+curl "http://127.0.0.1:8000/api/messages/2?after_msg=10&after_file=5"
+```
+
+Load older messages (pagination cursor):
+
+```bash
+curl "http://127.0.0.1:8000/api/messages/2/history?before_msg=100&limit=40"
+```
+
+## Project layout (source of truth)
+
+The live app code is under `app/`:
+
+```
+app/
+  main.py           # FastAPI routes + app setup
+  database.py       # SQLite schema + connection helpers
+  requirements.txt  # Dependencies
+  templates/        # Jinja2 HTML templates
+  static/           # CSS/JS assets
+  uploads/          # Uploaded files (created on startup)
+render.yaml         # Render blueprint
+README.md
+```
+
+If you see additional top-level `templates/` or `uploads/` folders, they are not used by the running app (templates/static/uploads resolve relative to `app/`).
+
+## Production hardening notes
+
+This project is great for demos and learning. For a real production deployment, you’ll typically want to add/verify at least:
+
+- Strong password hashing (e.g., bcrypt/argon2) instead of plain SHA-256
+- Upload validation (size limits, content-type checks), and malware scanning if needed
+- Authorization checks around file downloads (ensure only chat participants can download a file)
+- HTTPS-only cookies and secure session settings
+- CSRF protection for form posts (if exposed publicly)
+- Rate limiting / abuse protection
+
+### Security notes (current behavior)
+
+- Passwords are hashed with SHA-256 in code. This is not considered sufficient for production by modern standards (use a slow adaptive hash like bcrypt/argon2).
+- The download endpoint fetches a file by ID; if you deploy publicly, consider enforcing “only sender/receiver can download” authorization.
+
+## License
+
+No license file is included in this repository currently. If you intend to open-source the project, add a `LICENSE` file (e.g., MIT/Apache-2.0) and update this section.
+
+## Contributing
+
+- Keep changes focused and consistent with the current stack (FastAPI + Jinja2 + SQLite).
+- If you add new env vars, document them in this README.
+
+Suggested PR checklist:
+
+- Update docs if behavior changes (routes, env vars, deploy)
+- Keep UI changes responsive (mobile + desktop)
+
+## Troubleshooting
+
+- “Module not found” when starting: run from `app/` as shown (`cd app && uvicorn main:app ...`).
+- Can’t upload files: ensure `app/uploads/` is writable by the process.
+- Render deploy boots but data disappears after redeploy: configure persistent storage or move DB/uploads off-disk.

@@ -22,9 +22,14 @@ from starlette.middleware.sessions import SessionMiddleware
 import hashlib
 import os
 import shutil
+import sqlite3
+import uuid
+from typing import Optional
+
+from pydantic import BaseModel
 
 # Import our database functions
-from database import get_db, init_db
+from database import db_session, get_db, init_db, is_db_locked_error, run_write_transaction
 
 # ---- Base Directory ----
 # This ensures paths work correctly no matter where the server is started from
@@ -93,10 +98,48 @@ def is_image_filename(filename: str) -> bool:
     return ext in IMAGE_EXTENSIONS
 
 
+def sanitize_filename(filename: str) -> str:
+    """Return a filesystem-safe filename while preserving the visible name."""
+    base = os.path.basename(filename or "").strip()
+    base = base.replace("\x00", "")
+    if not base:
+        return "upload.bin"
+
+    safe_chars = []
+    for char in base:
+        if char.isalnum() or char in {".", "-", "_", " "}:
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+
+    cleaned = "".join(safe_chars).strip(" ._")
+    return cleaned[:180] if cleaned else "upload.bin"
+
+
+def build_upload_path(sender_id: int, receiver_id: int, original_filename: str) -> tuple[str, str]:
+    """Create a unique, traversal-safe storage path for an uploaded file."""
+    display_name = sanitize_filename(original_filename)
+    storage_name = f"{sender_id}_{receiver_id}_{uuid.uuid4().hex}_{display_name}"
+    uploads_dir = os.path.join(BASE_DIR, "uploads")
+    file_path = os.path.abspath(os.path.join(uploads_dir, storage_name))
+
+    uploads_root = os.path.abspath(uploads_dir) + os.sep
+    if not file_path.startswith(uploads_root):
+        raise ValueError("Invalid upload path")
+
+    return display_name, file_path
+
+
 def serialize_file_row(row) -> dict:
     item = dict(row)
     item["is_image"] = is_image_filename(item["filename"])
     return item
+
+
+def can_access_file(file_record, user_id: int) -> bool:
+    return bool(file_record) and (
+        file_record["sender_id"] == user_id or file_record["receiver_id"] == user_id
+    )
 
 
 def serialize_message_row(row) -> dict:
@@ -148,28 +191,28 @@ def register(request: Request, username: str = Form(...), password: str = Form(.
     - If not, save user with hashed password
     - Redirect to login page
     """
-    db = get_db()
+    def _tx(conn):
+        # Check if username is already taken
+        existing_user = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if existing_user:
+            return {"ok": False, "reason": "exists"}
 
-    # Check if username is already taken
-    existing_user = db.execute(
-        "SELECT id FROM users WHERE username = ?", (username,)
-    ).fetchone()
+        # Hash the password and save the new user
+        hashed_pw = hash_password(password)
+        conn.execute(
+            "INSERT INTO users (username, password) VALUES (?, ?)",
+            (username, hashed_pw)
+        )
+        return {"ok": True}
 
-    if existing_user:
-        db.close()
+    result = run_write_transaction(_tx)
+    if not result.get("ok"):
         return templates.TemplateResponse("register.html", {
             "request": request,
             "error": "Username already exists! Please choose another."
         })
-
-    # Hash the password and save the new user
-    hashed_pw = hash_password(password)
-    db.execute(
-        "INSERT INTO users (username, password) VALUES (?, ?)",
-        (username, hashed_pw)
-    )
-    db.commit()
-    db.close()
 
     # Redirect to login page after successful registration
     return RedirectResponse(url="/login?registered=1", status_code=302)
@@ -194,13 +237,11 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     - Save user_id in session
     - Redirect to dashboard
     """
-    db = get_db()
-
-    # Find user by username
-    user = db.execute(
-        "SELECT * FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    db.close()
+    with db_session() as db:
+        # Find user by username
+        user = db.execute(
+            "SELECT * FROM users WHERE username = ?", (username,)
+        ).fetchone()
 
     # Check if user exists and password matches
     if user is None or user["password"] != hash_password(password):
@@ -236,13 +277,11 @@ def dashboard(request: Request):
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    db = get_db()
-
-    # Get all users EXCEPT the currently logged-in user
-    users = db.execute(
-        "SELECT id, username FROM users WHERE id != ?", (user_id,)
-    ).fetchall()
-    db.close()
+    with db_session() as db:
+        # Get all users EXCEPT the currently logged-in user
+        users = db.execute(
+            "SELECT id, username FROM users WHERE id != ?", (user_id,)
+        ).fetchall()
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -262,24 +301,22 @@ def chat_page(request: Request, receiver_id: int):
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    db = get_db()
+    with db_session() as db:
+        # Get the receiver's info
+        receiver = db.execute(
+            "SELECT id, username FROM users WHERE id = ?", (receiver_id,)
+        ).fetchone()
 
-    # Get the receiver's info
-    receiver = db.execute(
-        "SELECT id, username FROM users WHERE id = ?", (receiver_id,)
-    ).fetchone()
+        if not receiver:
+            return RedirectResponse(url="/dashboard", status_code=302)
 
-    if not receiver:
-        db.close()
-        return RedirectResponse(url="/dashboard", status_code=302)
+        # Get all users for the sidebar (excluding self)
+        users = db.execute(
+            "SELECT id, username FROM users WHERE id != ?", (user_id,)
+        ).fetchall()
 
-    # Get all users for the sidebar (excluding self)
-    users = db.execute(
-        "SELECT id, username FROM users WHERE id != ?", (user_id,)
-    ).fetchall()
-
-    # Load only recent messages for faster initial render.
-    messages = db.execute("""
+        # Load only recent messages for faster initial render.
+        messages = db.execute("""
         SELECT m.*, u.username as sender_name
         FROM messages m
         JOIN users u ON m.sender_id = u.id
@@ -288,10 +325,10 @@ def chat_page(request: Request, receiver_id: int):
         ORDER BY m.id DESC
         LIMIT ?
     """, (user_id, receiver_id, receiver_id, user_id, CHAT_PAGE_SIZE)).fetchall()
-    messages = list(reversed(messages))
+        messages = list(reversed(messages))
 
-    # Load recent files only to keep first render fast.
-    files = db.execute("""
+        # Load recent files only to keep first render fast.
+        files = db.execute("""
         SELECT f.*, u.username as sender_name
         FROM files f
         JOIN users u ON f.sender_id = u.id
@@ -300,12 +337,12 @@ def chat_page(request: Request, receiver_id: int):
         ORDER BY f.id DESC
         LIMIT ?
     """, (user_id, receiver_id, receiver_id, user_id, FILE_PREVIEW_PAGE_SIZE)).fetchall()
-    files = list(reversed(files))
+        files = list(reversed(files))
 
-    oldest_msg_id = messages[0]["id"] if messages else 0
-    has_more_messages = False
-    if oldest_msg_id:
-        has_more_messages = db.execute("""
+        oldest_msg_id = messages[0]["id"] if messages else 0
+        has_more_messages = False
+        if oldest_msg_id:
+            has_more_messages = db.execute("""
             SELECT 1
             FROM messages
             WHERE ((sender_id = ? AND receiver_id = ?)
@@ -314,9 +351,8 @@ def chat_page(request: Request, receiver_id: int):
             LIMIT 1
         """, (user_id, receiver_id, receiver_id, user_id, oldest_msg_id)).fetchone() is not None
 
-    db.close()
+        timeline = to_timeline_items(messages, files)
 
-    timeline = to_timeline_items(messages, files)
 
     return templates.TemplateResponse("chat.html", {
         "request": request,
@@ -344,21 +380,30 @@ def send_message(
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    db = get_db()
-    db.execute(
-        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-        (user_id, receiver_id, content)
-    )
-    db.commit()
-    db.close()
+    try:
+        run_write_transaction(
+            lambda conn: conn.execute(
+                "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
+                (user_id, receiver_id, content),
+            )
+        )
+    except sqlite3.OperationalError as exc:
+        if is_db_locked_error(exc):
+            return HTMLResponse("Database busy, please retry.", status_code=503)
+        raise
 
     # Redirect back to the chat page
     return RedirectResponse(url=f"/chat/{receiver_id}", status_code=302)
 
 
 # ---- 7b. SEND MESSAGE (JSON API — used by auto-refresh JS) ----
+class SendMessagePayload(BaseModel):
+    receiver_id: Optional[int] = None
+    content: Optional[str] = None
+
+
 @app.post("/api/send")
-async def api_send_message(request: Request):
+def api_send_message(payload: SendMessagePayload, request: Request):
     """
     Accepts a JSON POST with {receiver_id, content}.
     Saves the message and returns it as JSON.
@@ -368,31 +413,35 @@ async def api_send_message(request: Request):
     if not user_id:
         return JSONResponse({"error": "not logged in"}, status_code=401)
 
-    data = await request.json()
-    receiver_id = data.get("receiver_id")
-    content = data.get("content", "").strip()
+    receiver_id = payload.receiver_id
+    content = (payload.content or "").strip()
 
     if not content or not receiver_id:
         return JSONResponse({"error": "missing fields"}, status_code=400)
 
-    db = get_db()
-    cursor = db.execute(
-        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-        (user_id, receiver_id, content)
-    )
-    msg_id = cursor.lastrowid
-    db.commit()
+    def _tx(conn):
+        cursor = conn.execute(
+            "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
+            (user_id, receiver_id, content),
+        )
+        msg_id = cursor.lastrowid
 
-    # Fetch back the saved message with timestamp and sender name
-    msg = db.execute("""
-        SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
-        FROM messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE m.id = ?
-    """, (msg_id,)).fetchone()
-    db.close()
+        # Fetch back the saved message with timestamp and sender name
+        msg = conn.execute("""
+            SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE m.id = ?
+        """, (msg_id,)).fetchone()
 
-    return dict(msg)
+        return dict(msg)
+
+    try:
+        return run_write_transaction(_tx)
+    except sqlite3.OperationalError as exc:
+        if is_db_locked_error(exc):
+            return JSONResponse({"error": "db busy"}, status_code=503)
+        raise
 
 
 # ---- 7c. POLL MESSAGES (JSON API — used for auto-refresh) ----
@@ -412,10 +461,9 @@ def api_get_messages(
     if not user_id:
         return JSONResponse({"error": "not logged in"}, status_code=401)
 
-    db = get_db()
-
-    # Get new messages with ID greater than what the client already has
-    messages = db.execute("""
+    with db_session() as db:
+        # Get new messages with ID greater than what the client already has
+        messages = db.execute("""
         SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
         FROM messages m
         JOIN users u ON m.sender_id = u.id
@@ -425,8 +473,8 @@ def api_get_messages(
         ORDER BY m.timestamp ASC
     """, (user_id, receiver_id, receiver_id, user_id, after_msg)).fetchall()
 
-    # Get new files with ID greater than what the client already has
-    files = db.execute("""
+        # Get new files with ID greater than what the client already has
+        files = db.execute("""
         SELECT f.id, f.filename, f.timestamp, f.sender_id, u.username as sender_name
         FROM files f
         JOIN users u ON f.sender_id = u.id
@@ -435,8 +483,6 @@ def api_get_messages(
           AND f.id > ?
         ORDER BY f.timestamp ASC
     """, (user_id, receiver_id, receiver_id, user_id, after_file)).fetchall()
-
-    db.close()
 
     return {
         "messages": [serialize_message_row(m) for m in messages],
@@ -465,8 +511,8 @@ def api_get_messages_history(
 
     page_size = max(10, min(limit, 100))
 
-    db = get_db()
-    older = db.execute("""
+    with db_session() as db:
+        older = db.execute("""
         SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
         FROM messages m
         JOIN users u ON m.sender_id = u.id
@@ -477,12 +523,12 @@ def api_get_messages_history(
         LIMIT ?
     """, (user_id, receiver_id, receiver_id, user_id, before_msg, page_size)).fetchall()
 
-    older = list(reversed(older))
-    oldest_loaded = older[0]["id"] if older else before_msg
+        older = list(reversed(older))
+        oldest_loaded = older[0]["id"] if older else before_msg
 
-    has_more = False
-    if older:
-        has_more = db.execute("""
+        has_more = False
+        if older:
+            has_more = db.execute("""
             SELECT 1
             FROM messages
             WHERE ((sender_id = ? AND receiver_id = ?)
@@ -490,7 +536,6 @@ def api_get_messages_history(
               AND id < ?
             LIMIT 1
         """, (user_id, receiver_id, receiver_id, user_id, oldest_loaded)).fetchone() is not None
-    db.close()
 
     return {
         "messages": [serialize_message_row(m) for m in older],
@@ -501,7 +546,7 @@ def api_get_messages_history(
 
 # ---- 8. UPLOAD FILE ----
 @app.post("/upload")
-async def upload_file(
+def upload_file(
     request: Request,
     receiver_id: int = Form(...),
     file: UploadFile = File(...)
@@ -515,23 +560,33 @@ async def upload_file(
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    # Create a unique filename to avoid conflicts
-    # Format: senderID_receiverID_originalname
-    safe_filename = f"{user_id}_{receiver_id}_{file.filename}"
-    file_path = os.path.join(BASE_DIR, "uploads", safe_filename)
+    try:
+        display_filename, file_path = build_upload_path(user_id, receiver_id, file.filename)
+    except ValueError:
+        return HTMLResponse("Invalid file name.", status_code=400)
 
     # Save the file to disk
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     # Save file metadata to database
-    db = get_db()
-    db.execute(
-        "INSERT INTO files (sender_id, receiver_id, filename, filepath) VALUES (?, ?, ?, ?)",
-        (user_id, receiver_id, file.filename, file_path)
-    )
-    db.commit()
-    db.close()
+    try:
+        run_write_transaction(
+            lambda conn: conn.execute(
+                "INSERT INTO files (sender_id, receiver_id, filename, filepath) VALUES (?, ?, ?, ?)",
+                (user_id, receiver_id, display_filename, file_path),
+            )
+        )
+    except sqlite3.OperationalError as exc:
+        # If DB write fails after the file is saved, clean up the orphaned file.
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+        if is_db_locked_error(exc):
+            return HTMLResponse("Database busy, please retry.", status_code=503)
+        raise
 
     # Redirect back to chat page
     return RedirectResponse(url=f"/chat/{receiver_id}", status_code=302)
@@ -548,18 +603,22 @@ def download_file(request: Request, file_id: int):
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    db = get_db()
-    file_record = db.execute(
-        "SELECT * FROM files WHERE id = ?", (file_id,)
-    ).fetchone()
-    db.close()
+    with db_session() as db:
+        file_record = db.execute(
+            "SELECT * FROM files WHERE id = ?", (file_id,)
+        ).fetchone()
 
-    if not file_record:
-        return RedirectResponse(url="/dashboard", status_code=302)
+    if not can_access_file(file_record, user_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    file_path = os.path.abspath(file_record["filepath"])
+    uploads_root = os.path.abspath(os.path.join(BASE_DIR, "uploads")) + os.sep
+    if not file_path.startswith(uploads_root) or not os.path.exists(file_path):
+        return JSONResponse({"error": "not found"}, status_code=404)
 
     # Send the file for download
     return FileResponse(
-        path=file_record["filepath"],
+        path=file_path,
         filename=file_record["filename"],
         media_type="application/octet-stream"
     )

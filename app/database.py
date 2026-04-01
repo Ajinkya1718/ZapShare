@@ -9,6 +9,8 @@ This file handles:
 
 import sqlite3
 import os
+import time
+from contextlib import contextmanager
 
 # Base directory = folder where this file lives
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,16 +18,93 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Database file will be created in the backend folder
 DATABASE_NAME = os.path.join(BASE_DIR, "zapshare.db")
 
+# SQLite concurrency tuning.
+# WAL allows concurrent readers during writes (important for polling-based UIs).
+SQLITE_TIMEOUT_SECONDS = float(os.getenv("SQLITE_TIMEOUT_SECONDS", "30"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000"))
+SQLITE_ENABLE_WAL = os.getenv("SQLITE_ENABLE_WAL", "1") not in {"0", "false", "False"}
+
+
+def _configure_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
+    conn.row_factory = sqlite3.Row  # So we can use row["column_name"]
+
+    # Keep behavior consistent and safe.
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA temp_store = MEMORY")
+
+    # WAL significantly reduces contention between polling readers and writers.
+    if SQLITE_ENABLE_WAL:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+        except sqlite3.OperationalError:
+            # If WAL can't be enabled (rare; e.g. read-only FS), continue with defaults.
+            pass
+
+    return conn
+
 
 def get_db():
     """
     Returns a connection to the SQLite database.
     row_factory = sqlite3.Row lets us access columns by name (like a dictionary).
     """
-    conn = sqlite3.connect(DATABASE_NAME)
-    conn.row_factory = sqlite3.Row  # So we can use row["column_name"]
-    conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key support
-    return conn
+    conn = sqlite3.connect(
+        DATABASE_NAME,
+        timeout=SQLITE_TIMEOUT_SECONDS,
+        check_same_thread=False,
+    )
+    return _configure_connection(conn)
+
+
+@contextmanager
+def db_session(*, commit: bool = False):
+    """Context-managed DB session that always closes the connection.
+
+    If commit=True, commits on success and rolls back on error.
+    """
+    conn = get_db()
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    except Exception:
+        if commit:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        conn.close()
+
+
+def is_db_locked_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "database is locked" in str(exc).lower() or "database is busy" in str(exc).lower()
+    )
+
+
+def run_write_transaction(fn, *, attempts: int = 5, initial_delay_s: float = 0.05, max_delay_s: float = 0.6):
+    """Run a write transaction with retries for transient SQLite lock contention."""
+    delay = initial_delay_s
+    last_exc: Exception | None = None
+
+    for _ in range(max(1, attempts)):
+        try:
+            with db_session(commit=True) as conn:
+                return fn(conn)
+        except Exception as exc:  # noqa: BLE001
+            if not is_db_locked_error(exc):
+                raise
+            last_exc = exc
+            time.sleep(delay)
+            delay = min(max_delay_s, delay * 2)
+
+    if last_exc is not None:
+        raise last_exc
+    raise sqlite3.OperationalError("database is locked")
 
 
 def init_db():
