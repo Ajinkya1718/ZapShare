@@ -53,7 +53,7 @@
                 </div>
                 <div class="chat-header-info">
                     <div class="chat-header-name">{{ receiver['username'] }}</div>
-                    <div class="chat-header-sub" id="pollStatus">Live • updates every 2s</div>
+                    <div class="chat-header-sub" id="pollStatus">Connecting... • status unknown</div>
                 </div>
             </div>
 
@@ -122,7 +122,9 @@
             <!-- Input area -->
             <div class="input-area">
                 <div class="composer-wrap" id="composerWrap">
-                    <button class="attach-btn" id="attachBtn" type="button" aria-label="More actions" aria-expanded="false">+</button>
+                    <button class="attach-btn" id="attachBtn" type="button" aria-label="More actions" aria-expanded="false">
+                        <span aria-hidden="true">+</span>
+                    </button>
 
                     <div class="attach-menu" id="attachMenu" role="menu" aria-hidden="true">
                         <button type="button" class="attach-menu-item" id="pickMediaBtn" role="menuitem">
@@ -135,10 +137,17 @@
                         </button>
                     </div>
 
+                    <button class="emoji-btn" id="emojiBtn" type="button" aria-label="Emoji">
+                        <span aria-hidden="true">◌</span>
+                    </button>
+
                     <input type="text" class="msg-input" id="msgInput" placeholder="Type a message" autocomplete="off">
 
                     <span id="sendingIndicator">sending…</span>
-                    <button class="send-btn" id="sendBtn" title="Send" aria-label="Send message">➤</button>
+                    <button class="send-btn" id="sendBtn" title="Voice message" aria-label="Voice message" data-mode="mic">
+                        <span class="send-icon icon-mic" aria-hidden="true">🎤</span>
+                        <span class="send-icon icon-send" aria-hidden="true">➤</span>
+                    </button>
                 </div>
 
                 <form method="POST" action="/upload" enctype="multipart/form-data" id="fileForm" class="sr-only">

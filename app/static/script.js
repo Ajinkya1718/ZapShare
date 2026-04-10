@@ -213,6 +213,19 @@ function escHtml(str) {
 
     if (!input || !sendBtn || !area) return; // not on chat page
 
+    function updateActionIcon() {
+        const hasText = input.value.trim().length > 0;
+        if (hasText) {
+            sendBtn.setAttribute('title', 'Send');
+            sendBtn.setAttribute('aria-label', 'Send message');
+            sendBtn.dataset.mode = 'send';
+        } else {
+            sendBtn.setAttribute('title', 'Voice message');
+            sendBtn.setAttribute('aria-label', 'Voice message');
+            sendBtn.dataset.mode = 'mic';
+        }
+    }
+
     function doSend() {
         const content = input.value.trim();
         if (!content) return;
@@ -246,7 +259,13 @@ function escHtml(str) {
     }
 
     // Click send button
-    sendBtn.addEventListener('click', doSend);
+    sendBtn.addEventListener('click', () => {
+        if (sendBtn.dataset.mode === 'send') {
+            doSend();
+        }
+    });
+
+    input.addEventListener('input', updateActionIcon);
 
     // Press Enter to send (Shift+Enter = new line)
     input.addEventListener('keydown', function(e) {
@@ -258,6 +277,7 @@ function escHtml(str) {
 
     // Scroll to bottom on first load
     scrollDown();
+    updateActionIcon();
 })();
 
 
@@ -335,8 +355,8 @@ function escHtml(str) {
 })();
 
 
-/* ---- 3. AUTO-REFRESH POLLING ---- */
-(function startPolling() {
+/* ---- 3. REALTIME SYNC (SSE FIRST + POLLING FALLBACK) ---- */
+(function startRealtimeSync() {
     const area = document.getElementById('messagesArea');
     if (!area) return; // only run on chat page
 
@@ -344,21 +364,93 @@ function escHtml(str) {
     const seen = new Set();
     let inFlight = false;
     let pollDelay = 2000;
-    let timer = null;
+    let pollTimer = null;
+    let reconnectTimer = null;
+    let sse = null;
+    let sseFailures = 0;
+    let peerOnline = null;
+    let connectionState = 'CONNECTING';
 
-    function scheduleNext(delay) {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(poll, delay);
+    function setState(nextState) {
+        connectionState = nextState;
+        renderStatus();
     }
 
-    function poll() {
+    function renderStatus() {
+        if (!pollStatus) return;
+
+        let stateLabel = 'Connecting...';
+        if (connectionState === 'LIVE') stateLabel = 'Live';
+        if (connectionState === 'DEGRADED') stateLabel = 'Live fallback';
+        if (connectionState === 'RECONNECTING') stateLabel = 'Reconnecting...';
+
+        let presenceLabel = 'status unknown';
+        if (peerOnline === true) presenceLabel = 'user online';
+        if (peerOnline === false) presenceLabel = 'user offline';
+
+        pollStatus.textContent = `${stateLabel} • ${presenceLabel}`;
+    }
+
+    function clearEmptyHint() {
+        const hint = area.querySelector('.empty-inline');
+        if (hint) hint.remove();
+    }
+
+    function seedSeen() {
+        area.querySelectorAll('[data-id][data-type]').forEach(node => {
+            seen.add(`${node.dataset.type}-${node.dataset.id}`);
+        });
+    }
+
+    function appendMessageIfNew(msg) {
+        const key = `msg-${msg.id}`;
+        if (seen.has(key)) return false;
+        if (area.querySelector(`[data-id="${msg.id}"][data-type="msg"]`)) {
+            seen.add(key);
+            return false;
+        }
+        clearEmptyHint();
+        area.appendChild(buildMsgBubble(msg, CURRENT_UID));
+        seen.add(key);
+        if (msg.id > lastMsgId) lastMsgId = msg.id;
+        return true;
+    }
+
+    function appendFileIfNew(file) {
+        const key = `file-${file.id}`;
+        if (seen.has(key)) return false;
+        if (area.querySelector(`[data-id="${file.id}"][data-type="file"]`)) {
+            seen.add(key);
+            return false;
+        }
+        clearEmptyHint();
+        area.appendChild(buildFileBubble(file, CURRENT_UID));
+        seen.add(key);
+        if (file.id > lastFileId) lastFileId = file.id;
+        return true;
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function schedulePoll(delay) {
+        stopPolling();
+        pollTimer = setTimeout(pollOnce, delay);
+    }
+
+    function pollOnce() {
+        if (connectionState === 'LIVE') return;
         if (inFlight) {
-            scheduleNext(pollDelay);
+            schedulePoll(pollDelay);
             return;
         }
+
         if (document.hidden) {
-            // Reduce background work when tab isn't visible.
-            scheduleNext(8000);
+            schedulePoll(8000);
             return;
         }
 
@@ -372,60 +464,143 @@ function escHtml(str) {
                 let updated = false;
                 const shouldStickToBottom = isNearBottom(area);
 
-                // Append new text messages
-                if (data.messages && data.messages.length > 0) {
-                    data.messages.forEach(msg => {
-                        const key = `msg-${msg.id}`;
-                        // Only add if not already in DOM (could be our own sent message)
-                        if (!seen.has(key) && !area.querySelector(`[data-id="${msg.id}"][data-type="msg"]`)) {
-                            area.appendChild(buildMsgBubble(msg, CURRENT_UID));
-                            seen.add(key);
-                        }
-                        if (msg.id > lastMsgId) lastMsgId = msg.id;
-                    });
-                    updated = true;
-                }
-
-                // Append new file messages
-                if (data.files && data.files.length > 0) {
-                    data.files.forEach(file => {
-                        const key = `file-${file.id}`;
-                        if (!seen.has(key) && !area.querySelector(`[data-id="${file.id}"][data-type="file"]`)) {
-                            area.appendChild(buildFileBubble(file, CURRENT_UID));
-                            seen.add(key);
-                        }
-                        if (file.id > lastFileId) lastFileId = file.id;
-                    });
-                    updated = true;
-                }
+                (data.messages || []).forEach(msg => {
+                    if (appendMessageIfNew(msg)) updated = true;
+                });
+                (data.files || []).forEach(file => {
+                    if (appendFileIfNew(file)) updated = true;
+                });
 
                 if (updated && shouldStickToBottom) scrollDown();
                 pollDelay = 2000;
-                if (pollStatus) pollStatus.textContent = 'Live • synced';
+                setState('DEGRADED');
             })
             .catch(() => {
-                // Show a subtle offline indicator but keep retrying
                 pollDelay = Math.min(pollDelay * 1.8, 12000);
-                if (pollStatus) pollStatus.textContent = 'Reconnecting...';
+                setState('RECONNECTING');
             })
             .finally(() => {
                 inFlight = false;
-                scheduleNext(pollDelay);
+                schedulePoll(pollDelay);
             });
     }
 
-    // Seed seen IDs from server-rendered DOM to avoid repeated querySelector churn.
-    area.querySelectorAll('[data-id][data-type]').forEach(node => {
-        seen.add(`${node.dataset.type}-${node.dataset.id}`);
-    });
+    function startPollingFallback() {
+        if (connectionState !== 'LIVE') {
+            setState('DEGRADED');
+        }
+        pollDelay = 1200;
+        pollOnce();
+    }
 
-    // Poll immediately, then continue with adaptive delay.
-    poll();
+    function parseEventData(evt) {
+        try {
+            return JSON.parse(evt.data);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function clearReconnectTimer() {
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+    }
+
+    function scheduleReconnect() {
+        clearReconnectTimer();
+        const delay = Math.min(1000 * (2 ** Math.min(sseFailures, 5)), 20000);
+        reconnectTimer = setTimeout(connectSSE, delay);
+    }
+
+    function connectSSE() {
+        clearReconnectTimer();
+        if (sse) {
+            sse.close();
+            sse = null;
+        }
+
+        setState('CONNECTING');
+        const stream = new EventSource(`/api/events/${RECEIVER_ID}`);
+        sse = stream;
+
+        stream.addEventListener('open', () => {
+            if (sse !== stream) return;
+            sseFailures = 0;
+            stopPolling();
+            setState('LIVE');
+        });
+
+        stream.addEventListener('message', evt => {
+            if (sse !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            const stickToBottom = isNearBottom(area);
+            if (appendMessageIfNew(payload) && stickToBottom) {
+                scrollDown();
+            }
+        });
+
+        stream.addEventListener('file', evt => {
+            if (sse !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            const stickToBottom = isNearBottom(area);
+            if (appendFileIfNew(payload) && stickToBottom) {
+                scrollDown();
+            }
+        });
+
+        stream.addEventListener('presence', evt => {
+            if (sse !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            if (payload.user_id === RECEIVER_ID) {
+                peerOnline = !!payload.online;
+                renderStatus();
+            }
+        });
+
+        stream.addEventListener('presence_snapshot', evt => {
+            if (sse !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            peerOnline = !!payload.peer_online;
+            renderStatus();
+        });
+
+        stream.onerror = () => {
+            if (sse !== stream) return;
+            stream.close();
+            sse = null;
+            sseFailures += 1;
+            setState('RECONNECTING');
+
+            if (sseFailures >= 3) {
+                startPollingFallback();
+            }
+            scheduleReconnect();
+        };
+    }
+
+    seedSeen();
+    renderStatus();
+    connectSSE();
 
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
+        if (!document.hidden && connectionState !== 'LIVE') {
             pollDelay = 1200;
-            poll();
+            pollOnce();
+        }
+    });
+
+    window.addEventListener('beforeunload', () => {
+        clearReconnectTimer();
+        stopPolling();
+        if (sse) {
+            sse.close();
+            sse = null;
         }
     });
 })();

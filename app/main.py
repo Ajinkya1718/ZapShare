@@ -14,15 +14,21 @@ Run with:  uvicorn main:app --reload
 
 # ---- Imports ----
 from fastapi import FastAPI, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 import hashlib
+import hmac
+import json
 import os
+import queue
+import secrets
 import shutil
 import sqlite3
+import threading
+import time
 import uuid
 from typing import Optional
 
@@ -35,17 +41,30 @@ from database import UPLOADS_DIR, db_session, init_db, is_db_locked_error, run_w
 # This ensures paths work correctly no matter where the server is started from
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_SECRET_KEY = os.getenv("SECRET_KEY", "zapshare-local-dev-secret-change-me")
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "0") in {"1", "true", "True"}
+SESSION_MAX_AGE_SECONDS = int(os.getenv("SESSION_MAX_AGE_SECONDS", "1209600"))
 CHAT_PAGE_SIZE = 50
 FILE_PREVIEW_PAGE_SIZE = 16
 HISTORY_PAGE_SIZE = 40
 STATIC_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
+SSE_HEARTBEAT_SECONDS = 20
+SSE_QUEUE_MAXSIZE = 128
+PASSWORD_HASH_SCHEME = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "310000"))
+PASSWORD_SALT_BYTES = 16
 
 # ---- App Setup ----
 app = FastAPI(title="ZapShare")
 
 # Secret key for session middleware (keeps users logged in)
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    max_age=SESSION_MAX_AGE_SECONDS,
+    same_site="lax",
+    https_only=SESSION_HTTPS_ONLY,
+)
 app.add_middleware(GZipMiddleware, minimum_size=700)
 
 # Mount static files (CSS, JS) so the browser can load them
@@ -77,12 +96,47 @@ def startup():
 # ---- Helper Functions ----
 
 def hash_password(password: str) -> str:
-    """
-    Hashes a password using SHA-256.
-    This converts plain text password into a secure hash.
-    Example: "hello" -> "2cf24dba5fb0a30e..."
-    """
+    """Create a strong PBKDF2 password hash for new/updated credentials."""
+    salt = secrets.token_hex(PASSWORD_SALT_BYTES)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return f"{PASSWORD_HASH_SCHEME}${PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def hash_password_legacy(password: str) -> str:
+    """Legacy SHA-256 hash kept for backward-compatible login migration."""
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against modern PBKDF2 format or legacy SHA-256."""
+    if stored_hash.startswith(f"{PASSWORD_HASH_SCHEME}$"):
+        parts = stored_hash.split("$", 3)
+        if len(parts) != 4:
+            return False
+        _, iterations_text, salt, expected = parts
+        try:
+            iterations = int(iterations_text)
+        except ValueError:
+            return False
+
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            iterations,
+        ).hex()
+        return hmac.compare_digest(candidate, expected)
+
+    return hmac.compare_digest(hash_password_legacy(password), stored_hash)
+
+
+def needs_password_rehash(stored_hash: str) -> bool:
+    return not stored_hash.startswith(f"{PASSWORD_HASH_SCHEME}$")
 
 
 def get_current_user(request: Request):
@@ -155,6 +209,98 @@ def to_timeline_items(messages, files):
     # SQLite timestamp string format sorts correctly lexicographically.
     timeline.sort(key=lambda item: (item["timestamp"], item["item_type"], item["id"]))
     return timeline
+
+
+def get_chat_partner(db, receiver_id: int):
+    return db.execute(
+        "SELECT id, username FROM users WHERE id = ?", (receiver_id,)
+    ).fetchone()
+
+
+class RealtimeHub:
+    """In-process SSE fan-out for conversation events and presence."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._subscribers: dict[tuple[int, int], set[queue.Queue[str]]] = {}
+        self._user_connections: dict[int, int] = {}
+
+    @staticmethod
+    def _conversation_key(user_a: int, user_b: int) -> tuple[int, int]:
+        return (user_a, user_b) if user_a < user_b else (user_b, user_a)
+
+    @staticmethod
+    def _sse_frame(event_type: str, payload: dict) -> str:
+        data = json.dumps(payload, separators=(",", ":"))
+        return f"event: {event_type}\ndata: {data}\n\n"
+
+    def is_user_online(self, user_id: int) -> bool:
+        with self._lock:
+            return self._user_connections.get(user_id, 0) > 0
+
+    def register(self, user_id: int, peer_id: int) -> tuple[tuple[int, int], queue.Queue[str], bool]:
+        key = self._conversation_key(user_id, peer_id)
+        client_queue: queue.Queue[str] = queue.Queue(maxsize=SSE_QUEUE_MAXSIZE)
+        with self._lock:
+            self._subscribers.setdefault(key, set()).add(client_queue)
+            prev_count = self._user_connections.get(user_id, 0)
+            self._user_connections[user_id] = prev_count + 1
+        return key, client_queue, prev_count == 0
+
+    def unregister(self, user_id: int, key: tuple[int, int], client_queue: queue.Queue[str]) -> bool:
+        with self._lock:
+            queues = self._subscribers.get(key)
+            if queues and client_queue in queues:
+                queues.remove(client_queue)
+                if not queues:
+                    self._subscribers.pop(key, None)
+
+            prev_count = self._user_connections.get(user_id, 0)
+            next_count = max(0, prev_count - 1)
+            if next_count == 0:
+                self._user_connections.pop(user_id, None)
+            else:
+                self._user_connections[user_id] = next_count
+        return prev_count > 0 and next_count == 0
+
+    def _emit(self, client_queue: queue.Queue[str], frame: str):
+        try:
+            client_queue.put_nowait(frame)
+        except queue.Full:
+            try:
+                client_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                client_queue.put_nowait(frame)
+            except queue.Full:
+                # Drop the frame for very slow clients to avoid blocking writes.
+                pass
+
+    def _fan_out(self, key: tuple[int, int], event_type: str, payload: dict):
+        frame = self._sse_frame(event_type, payload)
+        with self._lock:
+            targets = list(self._subscribers.get(key, set()))
+        for client_queue in targets:
+            self._emit(client_queue, frame)
+
+    def publish_conversation_event(self, user_a: int, user_b: int, event_type: str, payload: dict):
+        self._fan_out(self._conversation_key(user_a, user_b), event_type, payload)
+
+    def publish_presence(self, user_id: int, peer_id: int, online: bool):
+        self.publish_conversation_event(
+            user_id,
+            peer_id,
+            "presence",
+            {
+                "user_id": user_id,
+                "online": online,
+                "timestamp": int(time.time()),
+            },
+        )
+
+
+realtime_hub = RealtimeHub()
 
 
 # ============================================================
@@ -243,12 +389,25 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         ).fetchone()
 
     # Check if user exists and password matches
-    if user is None or user["password"] != hash_password(password):
+    if user is None or not verify_password(password, user["password"]):
         return templates.TemplateResponse("login.html", {
             "request": request,
             "error": "Invalid username or password!",
             "success": None
         })
+
+    if needs_password_rehash(user["password"]):
+        # One-time transparent upgrade from legacy hashes after successful login.
+        try:
+            run_write_transaction(
+                lambda conn: conn.execute(
+                    "UPDATE users SET password = ? WHERE id = ?",
+                    (hash_password(password), user["id"]),
+                )
+            )
+        except Exception:
+            # Keep login successful even if hash upgrade cannot be persisted.
+            pass
 
     # Save user info in session (this keeps them logged in)
     request.session["user_id"] = user["id"]
@@ -302,9 +461,7 @@ def chat_page(request: Request, receiver_id: int):
 
     with db_session() as db:
         # Get the receiver's info
-        receiver = db.execute(
-            "SELECT id, username FROM users WHERE id = ?", (receiver_id,)
-        ).fetchone()
+        receiver = get_chat_partner(db, receiver_id)
 
         if not receiver:
             return RedirectResponse(url="/dashboard", status_code=302)
@@ -379,13 +536,34 @@ def send_message(
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
-    try:
-        run_write_transaction(
-            lambda conn: conn.execute(
-                "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-                (user_id, receiver_id, content),
-            )
+    if receiver_id == user_id:
+        return HTMLResponse("Invalid receiver.", status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return HTMLResponse("Receiver not found.", status_code=404)
+
+    def _tx(conn):
+        cursor = conn.execute(
+            "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
+            (user_id, receiver_id, content),
         )
+        msg_id = cursor.lastrowid
+        msg = conn.execute(
+            """
+            SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE m.id = ?
+            """,
+            (msg_id,),
+        ).fetchone()
+        return dict(msg)
+
+    try:
+        msg = run_write_transaction(_tx)
+        realtime_hub.publish_conversation_event(user_id, receiver_id, "message", msg)
     except sqlite3.OperationalError as exc:
         if is_db_locked_error(exc):
             return HTMLResponse("Database busy, please retry.", status_code=503)
@@ -418,6 +596,14 @@ def api_send_message(payload: SendMessagePayload, request: Request):
     if not content or not receiver_id:
         return JSONResponse({"error": "missing fields"}, status_code=400)
 
+    if receiver_id == user_id:
+        return JSONResponse({"error": "invalid receiver"}, status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return JSONResponse({"error": "receiver not found"}, status_code=404)
+
     def _tx(conn):
         cursor = conn.execute(
             "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
@@ -436,7 +622,9 @@ def api_send_message(payload: SendMessagePayload, request: Request):
         return dict(msg)
 
     try:
-        return run_write_transaction(_tx)
+        msg = run_write_transaction(_tx)
+        realtime_hub.publish_conversation_event(user_id, receiver_id, "message", msg)
+        return msg
     except sqlite3.OperationalError as exc:
         if is_db_locked_error(exc):
             return JSONResponse({"error": "db busy"}, status_code=503)
@@ -459,6 +647,14 @@ def api_get_messages(
     user_id = get_current_user(request)
     if not user_id:
         return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    if receiver_id == user_id:
+        return JSONResponse({"error": "invalid receiver"}, status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return JSONResponse({"error": "receiver not found"}, status_code=404)
 
     with db_session() as db:
         # Get new messages with ID greater than what the client already has
@@ -505,6 +701,14 @@ def api_get_messages_history(
     if not user_id:
         return JSONResponse({"error": "not logged in"}, status_code=401)
 
+    if receiver_id == user_id:
+        return JSONResponse({"error": "invalid receiver"}, status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return JSONResponse({"error": "receiver not found"}, status_code=404)
+
     if before_msg <= 0:
         return JSONResponse({"error": "invalid cursor"}, status_code=400)
 
@@ -543,6 +747,58 @@ def api_get_messages_history(
     }
 
 
+@app.get("/api/events/{receiver_id}")
+def api_events(request: Request, receiver_id: int):
+    """Stream realtime message/file/presence updates for the active conversation."""
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    if receiver_id == user_id:
+        return JSONResponse({"error": "invalid receiver"}, status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return JSONResponse({"error": "receiver not found"}, status_code=404)
+
+    convo_key, client_queue, became_online = realtime_hub.register(user_id, receiver_id)
+    if became_online:
+        realtime_hub.publish_presence(user_id, receiver_id, online=True)
+
+    def event_stream():
+        try:
+            snapshot = {
+                "peer_user_id": receiver_id,
+                "peer_online": realtime_hub.is_user_online(receiver_id),
+                "timestamp": int(time.time()),
+            }
+            yield RealtimeHub._sse_frame("presence_snapshot", snapshot)
+
+            while True:
+                try:
+                    frame = client_queue.get(timeout=SSE_HEARTBEAT_SECONDS)
+                    yield frame
+                except queue.Empty:
+                    yield RealtimeHub._sse_frame(
+                        "heartbeat", {"timestamp": int(time.time())}
+                    )
+        finally:
+            became_offline = realtime_hub.unregister(user_id, convo_key, client_queue)
+            if became_offline:
+                realtime_hub.publish_presence(user_id, receiver_id, online=False)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ---- 8. UPLOAD FILE ----
 @app.post("/upload")
 def upload_file(
@@ -559,6 +815,14 @@ def upload_file(
     if not user_id:
         return RedirectResponse(url="/login", status_code=302)
 
+    if receiver_id == user_id:
+        return HTMLResponse("Invalid receiver.", status_code=400)
+
+    with db_session() as db:
+        receiver = get_chat_partner(db, receiver_id)
+    if not receiver:
+        return HTMLResponse("Receiver not found.", status_code=404)
+
     try:
         display_filename, file_path = build_upload_path(user_id, receiver_id, file.filename)
     except ValueError:
@@ -569,13 +833,26 @@ def upload_file(
         shutil.copyfileobj(file.file, buffer)
 
     # Save file metadata to database
-    try:
-        run_write_transaction(
-            lambda conn: conn.execute(
-                "INSERT INTO files (sender_id, receiver_id, filename, filepath) VALUES (?, ?, ?, ?)",
-                (user_id, receiver_id, display_filename, file_path),
-            )
+    def _tx(conn):
+        cursor = conn.execute(
+            "INSERT INTO files (sender_id, receiver_id, filename, filepath) VALUES (?, ?, ?, ?)",
+            (user_id, receiver_id, display_filename, file_path),
         )
+        file_id = cursor.lastrowid
+        file_row = conn.execute(
+            """
+            SELECT f.id, f.filename, f.timestamp, f.sender_id, u.username as sender_name
+            FROM files f
+            JOIN users u ON f.sender_id = u.id
+            WHERE f.id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+        return serialize_file_row(file_row)
+
+    try:
+        file_event = run_write_transaction(_tx)
+        realtime_hub.publish_conversation_event(user_id, receiver_id, "file", file_event)
     except sqlite3.OperationalError as exc:
         # If DB write fails after the file is saved, clean up the orphaned file.
         try:
@@ -585,6 +862,14 @@ def upload_file(
             pass
         if is_db_locked_error(exc):
             return HTMLResponse("Database busy, please retry.", status_code=503)
+        raise
+    except Exception:
+        # Keep filesystem and DB in sync even on non-SQLite write failures.
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
         raise
 
     # Redirect back to chat page
