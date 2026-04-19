@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSON
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
@@ -54,7 +55,13 @@ PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "310000"))
 PASSWORD_SALT_BYTES = 16
 
 # ---- App Setup ----
-app = FastAPI(title="ZapShare")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="ZapShare", lifespan=lifespan)
 
 # Secret key for session middleware (keeps users logged in)
 app.add_middleware(
@@ -82,13 +89,6 @@ async def cache_static_assets(request: Request, call_next):
                 f"public, max-age={STATIC_CACHE_MAX_AGE_SECONDS}, immutable"
             )
     return response
-
-
-# ---- Initialize Database on Startup ----
-@app.on_event("startup")
-def startup():
-    """Called when the server starts. Creates database tables."""
-    init_db()
 
 
 # ---- Helper Functions ----
