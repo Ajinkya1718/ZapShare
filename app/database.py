@@ -151,11 +151,23 @@ def init_db():
             sender_id INTEGER NOT NULL,
             receiver_id INTEGER NOT NULL,
             content TEXT NOT NULL,
+            client_nonce TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sender_id) REFERENCES users(id),
             FOREIGN KEY (receiver_id) REFERENCES users(id)
         )
     """)
+
+    message_columns = {
+        row["name"]
+        for row in cursor.execute("PRAGMA table_info(messages)").fetchall()
+    }
+    if "client_nonce" not in message_columns:
+        cursor.execute("ALTER TABLE messages ADD COLUMN client_nonce TEXT")
+
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_nonce ON messages(client_nonce)"
+    )
 
     # ---- Table 3: files ----
     # Stores metadata about uploaded files shared between users

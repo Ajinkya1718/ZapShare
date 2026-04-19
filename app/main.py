@@ -693,6 +693,7 @@ def send_message(
 class SendMessagePayload(BaseModel):
     receiver_id: Optional[int] = None
     content: Optional[str] = None
+    client_nonce: Optional[str] = None
 
 
 @app.post("/api/send")
@@ -708,6 +709,7 @@ def api_send_message(payload: SendMessagePayload, request: Request):
 
     receiver_id = payload.receiver_id
     content = (payload.content or "").strip()
+    client_nonce = (payload.client_nonce or "").strip() or None
 
     if not content or not receiver_id:
         return JSONResponse({"error": "missing fields"}, status_code=400)
@@ -721,9 +723,13 @@ def api_send_message(payload: SendMessagePayload, request: Request):
         return JSONResponse({"error": "receiver not found"}, status_code=404)
 
     def _tx(conn):
+        insert_sql = """
+            INSERT INTO messages (sender_id, receiver_id, content, client_nonce)
+            VALUES (?, ?, ?, ?)
+        """
         cursor = conn.execute(
-            "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-            (user_id, receiver_id, content),
+            insert_sql,
+            (user_id, receiver_id, content, client_nonce),
         )
         msg_id = cursor.lastrowid
 
@@ -741,6 +747,23 @@ def api_send_message(payload: SendMessagePayload, request: Request):
         msg = run_write_transaction(_tx)
         realtime_hub.publish_conversation_event(user_id, receiver_id, "message", msg)
         return msg
+    except sqlite3.IntegrityError:
+        if not client_nonce:
+            raise
+        with db_session() as db:
+            existing = db.execute(
+                """
+                SELECT m.id, m.content, m.timestamp, m.sender_id, u.username as sender_name
+                FROM messages m
+                JOIN users u ON m.sender_id = u.id
+                WHERE m.client_nonce = ?
+                """,
+                (client_nonce,),
+            ).fetchone()
+
+        if not existing:
+            raise
+        return dict(existing)
     except sqlite3.OperationalError as exc:
         if is_db_locked_error(exc):
             return JSONResponse({"error": "db busy"}, status_code=503)

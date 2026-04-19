@@ -399,6 +399,15 @@ setupGlobalPresenceSync();
 
     if (!input || !sendBtn || !area) return; // not on chat page
 
+    let sendInFlight = false;
+
+    function makeClientNonce() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
     function updateActionIcon() {
         const hasText = input.value.trim().length > 0;
         if (hasText) {
@@ -413,8 +422,13 @@ setupGlobalPresenceSync();
     }
 
     function doSend() {
+        if (sendInFlight) return;
+
         const content = input.value.trim();
         if (!content) return;
+
+        sendInFlight = true;
+        const clientNonce = makeClientNonce();
 
         // Show "sending..." indicator
         if (indicator) indicator.style.display = 'inline';
@@ -423,7 +437,11 @@ setupGlobalPresenceSync();
         fetch('/api/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ receiver_id: RECEIVER_ID, content: content })
+            body: JSON.stringify({
+                receiver_id: RECEIVER_ID,
+                content: content,
+                client_nonce: clientNonce
+            })
         })
         .then(r => r.json())
         .then(msg => {
@@ -434,6 +452,7 @@ setupGlobalPresenceSync();
         .finally(() => {
             if (indicator) indicator.style.display = 'none';
             sendBtn.disabled = false;
+            sendInFlight = false;
             input.focus();
         });
     }
