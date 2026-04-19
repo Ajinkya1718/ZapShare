@@ -17,7 +17,6 @@ from fastapi import FastAPI, Request, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 import hashlib
 import hmac
@@ -65,7 +64,6 @@ app.add_middleware(
     same_site="lax",
     https_only=SESSION_HTTPS_ONLY,
 )
-app.add_middleware(GZipMiddleware, minimum_size=700)
 
 # Mount static files (CSS, JS) so the browser can load them
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")

@@ -49,7 +49,7 @@ ZapShare is a lightweight “chat + send files” web app built with server-rend
 - Peer online/offline presence in the active chat header
 - Cross-device session sync (logout on one device invalidates all active sessions)
 - Dark/light mode toggle
-- GZip compression + cache headers for static assets
+- Cache headers for static assets
 
 ## Tech stack
 
