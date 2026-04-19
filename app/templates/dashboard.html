@@ -30,7 +30,11 @@
                 </div>
                 {% else %}
                 {% for user in users %}
-                <a href="/chat/{{ user['id'] }}" class="user-row">
+                <a href="/chat/{{ user['id'] }}"
+                   class="user-row"
+                   data-user-id="{{ user['id'] }}"
+                   data-presence-mode="dynamic"
+                   data-presence-base="Click to chat">
                     <div class="user-avatar">{{ user['username'][0]|upper }}</div>
                     <div class="user-row-info">
                         <div class="user-row-name">{{ user['username'] }}</div>

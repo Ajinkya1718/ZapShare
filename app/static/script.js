@@ -204,6 +204,192 @@ function escHtml(str) {
         .replace(/"/g,'&quot;');
 }
 
+function parseEventData(evt) {
+    try {
+        return JSON.parse(evt.data);
+    } catch (_) {
+        return null;
+    }
+}
+
+function setupGlobalPresenceSync() {
+    const rows = Array.from(document.querySelectorAll('.sidebar-users .user-row[data-user-id]'));
+    if (rows.length === 0) return;
+
+    const dynamicRows = new Map();
+    rows.forEach(row => {
+        if (row.dataset.presenceMode === 'dynamic') {
+            dynamicRows.set(String(row.dataset.userId), row);
+        }
+    });
+
+    let presenceSource = null;
+    let presenceTimer = null;
+    let presenceReconnectTimer = null;
+    let presenceFailures = 0;
+    let presencePollDelay = 8000;
+    let presenceInFlight = false;
+
+    function getStatusNode(row) {
+        return row ? row.querySelector('.user-row-sub') : null;
+    }
+
+    function setRowStatus(row, isOnline) {
+        if (!row || row.dataset.presenceMode === 'fixed') return;
+        const statusNode = getStatusNode(row);
+        if (!statusNode) return;
+        const base = row.dataset.presenceBase || 'Click to chat';
+        statusNode.textContent = isOnline ? 'Online' : base;
+        row.dataset.presenceState = isOnline ? 'online' : 'offline';
+    }
+
+    function applySnapshot(snapshot) {
+        const onlineIds = new Set((snapshot && snapshot.online_user_ids) || []);
+        dynamicRows.forEach((row, userId) => {
+            setRowStatus(row, onlineIds.has(Number(userId)));
+        });
+    }
+
+    function applyPresence(payload) {
+        if (!payload || typeof payload.user_id === 'undefined') return;
+        const row = dynamicRows.get(String(payload.user_id));
+        if (!row) return;
+        setRowStatus(row, !!payload.online);
+    }
+
+    function stopPresencePolling() {
+        if (presenceTimer) {
+            clearTimeout(presenceTimer);
+            presenceTimer = null;
+        }
+    }
+
+    function clearPresenceReconnectTimer() {
+        if (presenceReconnectTimer) {
+            clearTimeout(presenceReconnectTimer);
+            presenceReconnectTimer = null;
+        }
+    }
+
+    function schedulePresencePoll(delay) {
+        stopPresencePolling();
+        presenceTimer = setTimeout(pollPresenceOnce, delay);
+    }
+
+    function pollPresenceOnce() {
+        if (presenceInFlight) {
+            schedulePresencePoll(presencePollDelay);
+            return;
+        }
+
+        if (document.hidden) {
+            schedulePresencePoll(20000);
+            return;
+        }
+
+        presenceInFlight = true;
+        fetch('/api/presence/online', {
+            method: 'GET',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        })
+            .then(res => {
+                if (!res.ok) throw new Error('presence poll failed');
+                return res.json();
+            })
+            .then(applySnapshot)
+            .catch(() => {
+                presencePollDelay = Math.min(presencePollDelay * 1.6, 20000);
+            })
+            .finally(() => {
+                presenceInFlight = false;
+                schedulePresencePoll(presencePollDelay);
+            });
+    }
+
+    function startPresencePollingFallback() {
+        stopPresenceStream();
+        presencePollDelay = 2000;
+        pollPresenceOnce();
+    }
+
+    function clearPresenceSource() {
+        if (presenceSource) {
+            presenceSource.close();
+            presenceSource = null;
+        }
+    }
+
+    function schedulePresenceReconnect() {
+        clearPresenceReconnectTimer();
+        const delay = Math.min(1000 * (2 ** Math.min(presenceFailures, 5)), 15000);
+        presenceReconnectTimer = setTimeout(connectPresenceStream, delay);
+    }
+
+    function stopPresenceStream() {
+        clearPresenceReconnectTimer();
+        clearPresenceSource();
+        stopPresencePolling();
+    }
+
+    function connectPresenceStream() {
+        clearPresenceReconnectTimer();
+        clearPresenceSource();
+
+        const stream = new EventSource('/api/presence/events');
+        presenceSource = stream;
+
+        stream.addEventListener('open', () => {
+            if (presenceSource !== stream) return;
+            presenceFailures = 0;
+            stopPresencePolling();
+        });
+
+        stream.addEventListener('presence_snapshot', evt => {
+            if (presenceSource !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            applySnapshot(payload);
+        });
+
+        stream.addEventListener('presence', evt => {
+            if (presenceSource !== stream) return;
+            const payload = parseEventData(evt);
+            if (!payload) return;
+            applyPresence(payload);
+        });
+
+        stream.onerror = () => {
+            if (presenceSource !== stream) return;
+            stream.close();
+            presenceSource = null;
+            presenceFailures += 1;
+
+            if (presenceFailures >= 3) {
+                startPresencePollingFallback();
+                return;
+            }
+
+            schedulePresenceReconnect();
+        };
+    }
+
+    applySnapshot({ online_user_ids: [] });
+    connectPresenceStream();
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && !presenceSource) {
+            pollPresenceOnce();
+        }
+    });
+
+    window.addEventListener('beforeunload', () => {
+        stopPresenceStream();
+    });
+}
+
+setupGlobalPresenceSync();
+
 // Wire up the send button and Enter key — only runs on the chat page
 (function setupSend() {
     const input   = document.getElementById('msgInput');
@@ -242,13 +428,7 @@ function escHtml(str) {
         .then(r => r.json())
         .then(msg => {
             if (msg.error) { alert('Could not send: ' + msg.error); return; }
-            // Add the sent bubble immediately (no need to wait for poll)
-            const bubble = buildMsgBubble(msg, CURRENT_UID);
-            area.appendChild(bubble);
-            // Update tracker so poll doesn't add it again
-            if (msg.id > lastMsgId) lastMsgId = msg.id;
             input.value = '';
-            scrollDown();
         })
         .catch(() => alert('Network error — please try again.'))
         .finally(() => {

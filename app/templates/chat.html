@@ -27,7 +27,10 @@
                 {% else %}
                 {% for user in users %}
                 <a href="/chat/{{ user['id'] }}"
-                   class="user-row {% if user['id'] == receiver['id'] %}active{% endif %}">
+                   class="user-row {% if user['id'] == receiver['id'] %}active{% endif %}"
+                   data-user-id="{{ user['id'] }}"
+                   data-presence-mode="{% if user['id'] == receiver['id'] %}fixed{% else %}dynamic{% endif %}"
+                   data-presence-base="{% if user['id'] == receiver['id'] %}Chatting now{% else %}Click to chat{% endif %}">
                     <div class="user-avatar">{{ user['username'][0]|upper }}</div>
                     <div class="user-row-info">
                         <div class="user-row-name">{{ user['username'] }}</div>

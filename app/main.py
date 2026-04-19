@@ -313,7 +313,94 @@ class RealtimeHub:
         )
 
 
+class UserPresenceHub:
+    """In-process SSE fan-out for global online-user presence updates."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._subscribers: set[queue.Queue[str]] = set()
+        self._user_connections: dict[int, int] = {}
+
+    @staticmethod
+    def _sse_frame(event_type: str, payload: dict) -> str:
+        data = json.dumps(payload, separators=(",", ":"))
+        return f"event: {event_type}\ndata: {data}\n\n"
+
+    def _online_user_ids_locked(self) -> list[int]:
+        return sorted(user_id for user_id, count in self._user_connections.items() if count > 0)
+
+    def _emit(self, client_queue: queue.Queue[str], frame: str):
+        try:
+            client_queue.put_nowait(frame)
+        except queue.Full:
+            try:
+                client_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                client_queue.put_nowait(frame)
+            except queue.Full:
+                pass
+
+    def _broadcast(self, event_type: str, payload: dict):
+        frame = self._sse_frame(event_type, payload)
+        with self._lock:
+            targets = list(self._subscribers)
+        for client_queue in targets:
+            self._emit(client_queue, frame)
+
+    def register(self, user_id: int) -> tuple[queue.Queue[str], bool, dict]:
+        client_queue: queue.Queue[str] = queue.Queue(maxsize=SSE_QUEUE_MAXSIZE)
+        with self._lock:
+            self._subscribers.add(client_queue)
+            prev_count = self._user_connections.get(user_id, 0)
+            self._user_connections[user_id] = prev_count + 1
+            snapshot = {
+                "online_user_ids": self._online_user_ids_locked(),
+                "timestamp": int(time.time()),
+            }
+        became_online = prev_count == 0
+        return client_queue, became_online, snapshot
+
+    def unregister(self, user_id: int, client_queue: queue.Queue[str]) -> tuple[bool, dict]:
+        with self._lock:
+            self._subscribers.discard(client_queue)
+
+            prev_count = self._user_connections.get(user_id, 0)
+            next_count = max(0, prev_count - 1)
+            if next_count == 0:
+                self._user_connections.pop(user_id, None)
+            else:
+                self._user_connections[user_id] = next_count
+
+            snapshot = {
+                "online_user_ids": self._online_user_ids_locked(),
+                "timestamp": int(time.time()),
+            }
+
+        became_offline = prev_count > 0 and next_count == 0
+        return became_offline, snapshot
+
+    def publish_presence(self, user_id: int, online: bool):
+        self._broadcast(
+            "presence",
+            {
+                "user_id": user_id,
+                "online": online,
+                "timestamp": int(time.time()),
+            },
+        )
+
+    def current_snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "online_user_ids": self._online_user_ids_locked(),
+                "timestamp": int(time.time()),
+            }
+
+
 realtime_hub = RealtimeHub()
+presence_hub = UserPresenceHub()
 
 
 # ============================================================
@@ -727,6 +814,53 @@ def api_session_status(request: Request):
         "user_id": user_id,
         "username": request.session.get("username"),
     }
+
+
+@app.get("/api/presence/online")
+def api_presence_online(request: Request):
+    """Return the current online-user snapshot for fallback polling."""
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    return presence_hub.current_snapshot()
+
+
+@app.get("/api/presence/events")
+def api_presence_events(request: Request):
+    """Stream global online-user presence updates to authenticated pages."""
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"error": "not logged in"}, status_code=401)
+
+    client_queue, became_online, snapshot = presence_hub.register(user_id)
+
+    def event_stream():
+        try:
+            yield UserPresenceHub._sse_frame("presence_snapshot", snapshot)
+            if became_online:
+                presence_hub.publish_presence(user_id, online=True)
+
+            while True:
+                try:
+                    frame = client_queue.get(timeout=SSE_HEARTBEAT_SECONDS)
+                    yield frame
+                except queue.Empty:
+                    yield UserPresenceHub._sse_frame("heartbeat", {"timestamp": int(time.time())})
+        finally:
+            became_offline, _disconnect_snapshot = presence_hub.unregister(user_id, client_queue)
+            if became_offline:
+                presence_hub.publish_presence(user_id, online=False)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/messages/{receiver_id}/history")

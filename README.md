@@ -47,6 +47,7 @@ ZapShare is a lightweight “chat + send files” web app built with server-rend
 - Message history pagination (load older messages in pages)
 - File sharing (upload + download), with inline image previews
 - Peer online/offline presence in the active chat header
+- Global online-user presence sync across dashboard/chat pages
 - Cross-device session sync (logout on one device invalidates all active sessions)
 - Dark/light mode toggle
 - Cache headers for static assets
@@ -198,6 +199,8 @@ JSON APIs (used by the frontend):
 |---|---:|---|
 | `/api/send` | POST | Send message via JSON (no page reload) |
 | `/api/events/{receiver_id}` | GET | SSE stream for realtime events (message, file, presence, heartbeat) |
+| `/api/presence/events` | GET | SSE stream for global online-user presence updates |
+| `/api/presence/online` | GET | JSON snapshot of currently online users for fallback polling |
 | `/api/messages/{receiver_id}` | GET | Poll new messages/files after last IDs |
 | `/api/messages/{receiver_id}/history` | GET | Fetch older messages (pagination) |
 | `/api/session/status` | GET | AJAX session heartbeat for cross-device logout/session invalidation |
