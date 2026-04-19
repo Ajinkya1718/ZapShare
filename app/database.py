@@ -128,9 +128,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            session_epoch INTEGER NOT NULL DEFAULT 1
         )
     """)
+
+    # Backfill session_epoch for databases created before this column existed.
+    user_columns = {
+        row["name"]
+        for row in cursor.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "session_epoch" not in user_columns:
+        cursor.execute(
+            "ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 1"
+        )
 
     # ---- Table 2: messages ----
     # Stores text messages between two users

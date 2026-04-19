@@ -144,7 +144,22 @@ def get_current_user(request: Request):
     Checks if a user is logged in by reading the session.
     Returns user_id if logged in, None otherwise.
     """
-    return request.session.get("user_id")
+    user_id = request.session.get("user_id")
+    session_epoch = request.session.get("session_epoch")
+    if not user_id or session_epoch is None:
+        return None
+
+    with db_session() as db:
+        user = db.execute(
+            "SELECT id, session_epoch FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+
+    if not user or user["session_epoch"] != session_epoch:
+        request.session.clear()
+        return None
+
+    return user_id
 
 
 def is_image_filename(filename: str) -> bool:
@@ -365,12 +380,14 @@ def register(request: Request, username: str = Form(...), password: str = Form(.
 
 # ---- 3. LOGIN PAGE ----
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, registered: int = 0):
+def login_page(request: Request, registered: int = 0, expired: int = 0):
     """Show the login form."""
     return templates.TemplateResponse("login.html", {
         "request": request,
         "error": None,
-        "success": "Registration successful! Please login." if registered else None
+        "success": "Session expired. Please sign in again." if expired else (
+            "Registration successful! Please login." if registered else None
+        )
     })
 
 
@@ -412,6 +429,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     # Save user info in session (this keeps them logged in)
     request.session["user_id"] = user["id"]
     request.session["username"] = user["username"]
+    request.session["session_epoch"] = user["session_epoch"]
 
     return RedirectResponse(url="/dashboard", status_code=302)
 
@@ -420,6 +438,19 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
 @app.get("/logout")
 def logout(request: Request):
     """Clear session and redirect to login page."""
+    user_id = request.session.get("user_id")
+    if user_id:
+        try:
+            run_write_transaction(
+                lambda conn: conn.execute(
+                    "UPDATE users SET session_epoch = session_epoch + 1 WHERE id = ?",
+                    (user_id,),
+                )
+            )
+        except Exception:
+            # Keep logout flow resilient if persistence is temporarily unavailable.
+            pass
+
     request.session.clear()
     return RedirectResponse(url="/login", status_code=302)
 
@@ -683,6 +714,20 @@ def api_get_messages(
         "messages": [serialize_message_row(m) for m in messages],
         "files": [serialize_file_row(f) for f in files],
         "user_id": user_id
+    }
+
+
+@app.get("/api/session/status")
+def api_session_status(request: Request):
+    """Lightweight AJAX endpoint used by clients to detect cross-device logout."""
+    user_id = get_current_user(request)
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "username": request.session.get("username"),
     }
 
 

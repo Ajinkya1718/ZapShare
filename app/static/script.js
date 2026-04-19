@@ -606,6 +606,68 @@ function escHtml(str) {
 })();
 
 
+/* ---- 3b. SESSION WATCHER (cross-device logout sync) ---- */
+(function setupSessionWatcher() {
+    const path = window.location.pathname;
+    const isAuthPage = path === '/login' || path === '/register';
+    if (isAuthPage) return;
+
+    let checkTimer = null;
+    let inFlight = false;
+
+    function computeDelay() {
+        return document.hidden ? 25000 : 8000;
+    }
+
+    function schedule() {
+        if (checkTimer) clearTimeout(checkTimer);
+        checkTimer = setTimeout(checkSession, computeDelay());
+    }
+
+    function redirectToLoginExpired() {
+        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+        window.location.href = `/login?expired=1&next=${next}`;
+    }
+
+    function checkSession() {
+        if (inFlight) {
+            schedule();
+            return;
+        }
+
+        inFlight = true;
+        fetch('/api/session/status', {
+            method: 'GET',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        })
+            .then(res => {
+                if (res.status === 401) {
+                    redirectToLoginExpired();
+                    return null;
+                }
+                if (!res.ok) {
+                    throw new Error('session check failed');
+                }
+                return res.json();
+            })
+            .catch(() => {
+                // Ignore transient errors and retry on next interval.
+            })
+            .finally(() => {
+                inFlight = false;
+                schedule();
+            });
+    }
+
+    schedule();
+    document.addEventListener('visibilitychange', schedule);
+    window.addEventListener('beforeunload', () => {
+        if (checkTimer) clearTimeout(checkTimer);
+    });
+})();
+
+
 /* ---- 4. FILE LABEL UPDATE ---- */
 function updateFileLabel() {}
 
